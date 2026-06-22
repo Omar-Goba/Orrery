@@ -1,0 +1,41 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #07090e;
+  color: #dde4f0;
+  font-family: Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1d2537; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #28344a; }
+
+.typing-cursor::after {
+  content: "▋";
+  animation: blink 1s step-end infinite;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+
+/* iPhone safe-area padding for bottom nav */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* Ensure the layout fills the viewport on iOS without bounce */
+html, body { height: 100%; overscroll-behavior: none; }
