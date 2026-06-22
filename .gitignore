@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.ocr.json
+dbs/chroma/
+dbs/papers.json
+dbs/output/
+bulk_ingest_errors.jsonl
+frontend/node_modules/
+frontend/dist/
+.DS_Store
