@@ -6,7 +6,7 @@ import {
 import clsx from "clsx";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Citation, PaperRecord, SSEEvent } from "../api/client";
+import type { ApiMode, Citation, PaperRecord, SSEEvent } from "../api/client";
 import { getPaperUrl, streamChat, uploadPaper } from "../api/client";
 
 // ── Message types ───────────────────────────────────────────────────────────
@@ -37,6 +37,7 @@ export function AgentPortal({
   hideHeader = false,
   variant = "panel",
   prefill,
+  apiMode = "normal",
   disableUpload = false,
 }: {
   onUploadDone?: () => void;
@@ -55,6 +56,8 @@ export function AgentPortal({
   variant?: "panel" | "float";
   /** Text to drop into the omnibar + focus signal — bump `token` to re-trigger for the same text. */
   prefill?: { text: string; token: number };
+  /** Observer mode reads and chats through the public tour API. */
+  apiMode?: ApiMode;
   /** Observer mode: chat still works, but uploads mutate a single-user backend. */
   disableUpload?: boolean;
 }) {
@@ -214,7 +217,7 @@ export function AgentPortal({
         setBusy(false);
       }
       scrollDown();
-    }, history);
+    }, history, apiMode);
   };
 
   // ── Upload ────────────────────────────────────────────────────────────────
@@ -282,6 +285,7 @@ export function AgentPortal({
           msg={m}
           onOpenPaper={onOpenPaper}
           onOpenPaperId={onOpenPaperId}
+          apiMode={apiMode}
         />
       ))}
       <div ref={bottomRef} />
@@ -499,10 +503,12 @@ function MsgBubble({
   msg,
   onOpenPaper,
   onOpenPaperId,
+  apiMode,
 }: {
   msg: Msg;
   onOpenPaper?: (paper: PaperRecord) => void;
   onOpenPaperId?: (paperId: string) => void;
+  apiMode: ApiMode;
 }) {
   if (msg.role === "system") {
     return (
@@ -594,7 +600,7 @@ function MsgBubble({
         {msg.papers && msg.papers.length > 0 && (
           <div className="space-y-1.5">
             {msg.papers.map(p => (
-              <PaperCard key={p.id} paper={p} onOpenPaper={onOpenPaper} />
+              <PaperCard key={p.id} paper={p} onOpenPaper={onOpenPaper} apiMode={apiMode} />
             ))}
           </div>
         )}
@@ -603,7 +609,7 @@ function MsgBubble({
         {msg.citations && msg.citations.length > 0 && (
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             {msg.citations.map(c => (
-              <CitationChip key={c.paper_id} c={c} onOpenPaperId={onOpenPaperId} />
+              <CitationChip key={c.paper_id} c={c} onOpenPaperId={onOpenPaperId} apiMode={apiMode} />
             ))}
           </div>
         )}
@@ -616,9 +622,11 @@ function MsgBubble({
 function PaperCard({
   paper: p,
   onOpenPaper,
+  apiMode,
 }: {
   paper: PaperRecord;
   onOpenPaper?: (paper: PaperRecord) => void;
+  apiMode: ApiMode;
 }) {
   const parts = p.cluster_path?.split("/") ?? [];
   const content = (
@@ -666,7 +674,7 @@ function PaperCard({
 
   return (
     <a
-      href={getPaperUrl(p.id)}
+      href={getPaperUrl(p.id, apiMode)}
       target="_blank"
       rel="noreferrer"
       className={className}
@@ -677,7 +685,15 @@ function PaperCard({
 }
 
 // ── Citation chip ────────────────────────────────────────────────────────────
-function CitationChip({ c, onOpenPaperId }: { c: Citation; onOpenPaperId?: (paperId: string) => void }) {
+function CitationChip({
+  c,
+  onOpenPaperId,
+  apiMode,
+}: {
+  c: Citation;
+  onOpenPaperId?: (paperId: string) => void;
+  apiMode: ApiMode;
+}) {
   const className = "inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/15 text-violet-300 hover:border-violet-400/35 hover:bg-violet-500/15 transition-colors";
   const content = (
     <>
@@ -695,7 +711,7 @@ function CitationChip({ c, onOpenPaperId }: { c: Citation; onOpenPaperId?: (pape
   }
 
   return (
-    <a href={getPaperUrl(c.paper_id)} target="_blank" rel="noreferrer" className={className}>
+    <a href={getPaperUrl(c.paper_id, apiMode)} target="_blank" rel="noreferrer" className={className}>
       {content}
     </a>
   );

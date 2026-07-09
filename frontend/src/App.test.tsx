@@ -23,6 +23,7 @@ vi.mock("./scenes/WarpOverlay", () => ({
   },
 }));
 vi.mock("./api/client", () => ({
+  getTourGalaxy: vi.fn().mockResolvedValue({ stars: 0, ignited: 0, constellations: 0 }),
   listPapers: vi.fn().mockResolvedValue([]),
   getTree: vi.fn().mockResolvedValue(null),
   getSimilarityGraph: vi.fn().mockResolvedValue({}),

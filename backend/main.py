@@ -33,6 +33,7 @@ from backend.services.similarity import top_k_neighbors
 from backend.services.tree import build_tree
 from backend.services.vectorstore import VectorStore
 from backend.space import SpaceRegistry, UserSpace, current_space
+from backend.tour import router as tour_router
 
 # ── shared singletons ──────────────────────────────────────────────────────
 _ocr_svc: OCRService
@@ -88,6 +89,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(tour_router)
 
 
 def _object_key_for(paper_id: str) -> str:

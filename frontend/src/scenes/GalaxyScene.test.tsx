@@ -20,6 +20,7 @@ vi.mock("../api/client", async () => {
     getSimilarityGraph: vi.fn().mockResolvedValue({}),
     setPaperStatus: vi.fn(),
     streamReindex: vi.fn(),
+    getPaperUrl: vi.fn((id: string, mode?: string) => `/paper/${mode ?? "normal"}/${id}`),
   };
 });
 
@@ -64,6 +65,8 @@ describe("GalaxyScene gating", () => {
     expect(screen.queryAllByLabelText("Reindex library").length).toBe(0);
     expect(await screen.findByText("Take the tour")).toBeInTheDocument();
     expect(screen.getAllByPlaceholderText("Search titles, authors...").length).toBeGreaterThan(0);
+    expect(api.listPapers).toHaveBeenCalledWith("tour");
+    expect(api.getTree).toHaveBeenCalledWith("tour");
   });
 
   it("owner mode shows upload and reindex controls", async () => {
@@ -74,6 +77,8 @@ describe("GalaxyScene gating", () => {
     await screen.findAllByTestId("paper-graph");
     expect((await screen.findAllByLabelText("Upload a PDF")).length).toBeGreaterThan(0);
     expect(screen.getAllByLabelText("Reindex library").length).toBeGreaterThan(0);
+    expect(api.listPapers).toHaveBeenCalledWith("normal");
+    expect(api.getTree).toHaveBeenCalledWith("normal");
   });
 });
 

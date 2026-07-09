@@ -47,6 +47,11 @@ class Settings(BaseSettings):
         default=10 * 1024 * 1024 * 1024, validation_alias="ORRERY_KEEPER_QUOTA"
     )  # 10 GiB
 
+    # ── public tour (Tier 2, phase 5) ───────────────────────────────────────
+    # Anonymous observers may chat over the Keeper corpus unless this is
+    # disabled. The route is still IP rate-limited separately from auth flows.
+    tour_chat_enabled: bool = Field(default=True, validation_alias="ORRERY_TOUR_CHAT")
+
     @property
     def objects_dir(self) -> Path:
         """Root of the ObjectStore. The only PDF-bytes root in the app —

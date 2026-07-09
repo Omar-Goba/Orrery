@@ -1,27 +1,51 @@
+import { getMe, loginAuth, logoutAuth, signupAuth, type AuthUser } from "../api/client";
+
 export const OWNER_USERNAME = "omar";
 const KEY = "orrery.session";
 
 export interface Session {
   username: string;
+  displayName: string;
+  role: "keeper" | "voyager";
   isOwner: boolean;
   createdAt: string;
 }
 
 export type GalaxyMode = "owner" | "observer";
 
-// Fake auth: any non-empty username/password pair is accepted. This is
-// intentional theater for the demo — see docs/md/ORRERY_UI_PLAN.md §12 for
-// the real-auth boundary this file will grow into.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- password kept in the signature to document the fake-auth contract
-export function login(username: string, _password: string): Session {
-  const u = username.trim().toLowerCase();
+function sessionFromUser(user: AuthUser): Session {
   const session: Session = {
-    username: u,
-    isOwner: u === OWNER_USERNAME,
-    createdAt: new Date().toISOString(),
+    username: user.handle,
+    displayName: user.display_name,
+    role: user.role,
+    isOwner: user.role === "keeper",
+    createdAt: user.created_at,
   };
   localStorage.setItem(KEY, JSON.stringify(session));
   return session;
+}
+
+export async function login(username: string, password: string): Promise<Session> {
+  const user = await loginAuth(username.trim().toLowerCase(), password);
+  return sessionFromUser(user);
+}
+
+export async function signup(
+  username: string,
+  password: string,
+  inviteCode?: string,
+): Promise<Session> {
+  const user = await signupAuth(username.trim().toLowerCase(), password, inviteCode);
+  return sessionFromUser(user);
+}
+
+export async function refreshSession(): Promise<Session | null> {
+  try {
+    return sessionFromUser(await getMe());
+  } catch {
+    localStorage.removeItem(KEY);
+    return null;
+  }
 }
 
 export function getSession(): Session | null {
@@ -33,6 +57,10 @@ export function getSession(): Session | null {
   }
 }
 
-export function logout(): void {
-  localStorage.removeItem(KEY);
+export async function logout(): Promise<void> {
+  try {
+    await logoutAuth();
+  } finally {
+    localStorage.removeItem(KEY);
+  }
 }

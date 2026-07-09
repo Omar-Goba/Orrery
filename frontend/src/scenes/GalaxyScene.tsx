@@ -10,7 +10,7 @@ import { StarCard } from "../components/StarCard";
 import { GalaxyPlaque } from "../components/GalaxyPlaque";
 import { TourController } from "../components/TourController";
 import { computeGalaxyStats } from "../lib/galaxy";
-import type { PaperRecord, SimilarityGraph, TreeNode } from "../api/client";
+import type { ApiMode, PaperRecord, SimilarityGraph, TreeNode } from "../api/client";
 import {
   getPaperUrl, getSimilarityGraph, getTree, listPapers, setPaperStatus, streamReindex,
 } from "../api/client";
@@ -61,9 +61,10 @@ export function GalaxyScene({
   const oracleTokenRef = useRef(0);
   const meteorRef   = useRef<{ arrive: (clusterPath: string) => void; cancel: () => void } | null>(null);
 
-  // Single-user backend: only the owner's galaxy has real data. Non-owner
-  // galaxies (fake signups) render dark — never fetch, never fake a payload.
+  // Only Omar's public Keeper galaxy has observer data. Other visitor galaxies
+  // stay dark; owner mode uses the authenticated normal API.
   const hasRealData = galaxy === OWNER_USERNAME;
+  const apiMode: ApiMode = mode === "observer" ? "tour" : "normal";
 
   const load = useCallback(async () => {
     if (!hasRealData) {
@@ -72,19 +73,20 @@ export function GalaxyScene({
       return;
     }
     try {
-      const [t, p] = await Promise.all([getTree(), listPapers()]);
+      const [t, p] = await Promise.all([getTree(apiMode), listPapers(apiMode)]);
       setTree(t);
       setPapers(p);
     } catch {
       setTree(null);
+      setPapers([]);
     }
     try {
-      setSimilarity(await getSimilarityGraph());
+      setSimilarity(await getSimilarityGraph(apiMode));
     } catch {
       // Real-embedding constellation edges are an enhancement, not required —
       // ignore failures so a missing/older backend doesn't break the graph.
     }
-  }, [hasRealData]);
+  }, [apiMode, hasRealData]);
 
   useEffect(() => {
     queueMicrotask(() => { void load(); });
@@ -135,8 +137,8 @@ export function GalaxyScene({
   const openPaperById = useCallback((paperId: string) => {
     const paper = papers.find(p => p.id === paperId);
     if (paper) setActivePaper(paper);
-    else window.open(getPaperUrl(paperId), "_blank");
-  }, [papers]);
+    else window.open(getPaperUrl(paperId, apiMode), "_blank");
+  }, [apiMode, papers]);
 
   // Desktop graph click: pin the StarCard instead of opening the reader
   // directly — one more click to open, but far less jumpy for observers.
@@ -288,6 +290,7 @@ export function GalaxyScene({
           onUploadStart={handleUploadStart}
           onUploadArrive={handleUploadArrive}
           onUploadCancel={handleUploadCancel}
+          apiMode={apiMode}
           disableUpload={isObserver}
           prefill={oraclePrefill ?? undefined}
         />
@@ -315,6 +318,7 @@ export function GalaxyScene({
                 key={activePaper.id}
                 paper={activePaper}
                 mode="desktop"
+                apiMode={apiMode}
                 onClose={() => setActivePaper(null)}
                 onToggleStatus={isObserver ? undefined : toggleStatus}
               />
@@ -386,7 +390,7 @@ export function GalaxyScene({
           >
             <AgentPortal
               onUploadDone={refresh} onOpenPaper={openPaper} onOpenPaperId={openPaperById}
-              hideHeader disableUpload={isObserver} prefill={oraclePrefill ?? undefined}
+              hideHeader apiMode={apiMode} disableUpload={isObserver} prefill={oraclePrefill ?? undefined}
             />
           </div>
         </div>
@@ -396,6 +400,7 @@ export function GalaxyScene({
             key={activePaper.id}
             paper={activePaper}
             mode="mobile"
+            apiMode={apiMode}
             onClose={() => setActivePaper(null)}
             onToggleStatus={isObserver ? undefined : toggleStatus}
           />

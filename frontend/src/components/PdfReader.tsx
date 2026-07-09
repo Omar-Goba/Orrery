@@ -13,7 +13,7 @@ import clsx from "clsx";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
-import type { PaperRecord } from "../api/client";
+import type { ApiMode, PaperRecord } from "../api/client";
 import { getPaperUrl } from "../api/client";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -21,6 +21,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface PdfReaderProps {
   paper: PaperRecord;
   mode: "desktop" | "mobile";
+  apiMode?: ApiMode;
   onClose: () => void;
   onToggleStatus?: (paper: PaperRecord, newStatus: "read" | "toread") => void;
 }
@@ -29,7 +30,7 @@ const MIN_SCALE = 0.7;
 const MAX_SCALE = 2.2;
 const SCALE_STEP = 0.15;
 
-export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderProps) {
+export function PdfReader({ paper, mode, apiMode = "normal", onClose, onToggleStatus }: PdfReaderProps) {
   const [pageCount, setPageCount] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.1);
@@ -37,7 +38,8 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
   const [loadError, setLoadError] = useState(false);
 
   const title = paper.title ?? paper.filename.replace(/\.pdf$/i, "");
-  const fileUrl = getPaperUrl(paper.id);
+  const fileUrl = getPaperUrl(paper.id, apiMode);
+  const documentFile = apiMode === "normal" ? { url: fileUrl, withCredentials: true } : fileUrl;
   const isRead = paper.status === "read";
   const nextStatus = isRead ? "toread" : "read";
 
@@ -202,7 +204,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
       <div className="flex-1 overflow-auto bg-[#05070b] select-text">
         <Document
           key={paper.id}
-          file={fileUrl}
+          file={documentFile}
           onLoadSuccess={({ numPages }) => {
             setPageCount(numPages);
             setPageNumber(1);

@@ -79,6 +79,13 @@ class SimilarityNeighbor(BaseModel):
     score: float
 
 
+class TourGalaxyResponse(BaseModel):
+    display_name: str
+    stars: int
+    ignited: int
+    constellations: int
+
+
 class Recommendation(BaseModel):
     paper_id: str
     title: str

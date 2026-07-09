@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X } from "lucide-react";
-import { login } from "../auth/session";
+import { login, signup } from "../auth/session";
 
 export function Gate({
   variant,
@@ -13,18 +13,30 @@ export function Gate({
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const isLogin = variant === "login";
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) {
       setError("Every traveler needs a name.");
       return;
     }
-    const session = login(username, password);
-    onEnter(session.username);
+    setBusy(true);
+    setError(null);
+    try {
+      const session = isLogin
+        ? await login(username, password)
+        : await signup(username, password, inviteCode.trim() || undefined);
+      onEnter(session.username);
+    } catch {
+      setError(isLogin ? "The gate did not recognize that orbit." : "The ignition code did not pass.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -62,18 +74,30 @@ export function Gate({
             />
           </div>
 
+          {!isLogin && (
+            <div className="flex items-center gap-2 rounded-lg border border-rim bg-bg/60 px-2.5 py-1.5 focus-within:border-cyan-500/40">
+              <input
+                value={inviteCode}
+                onChange={e => { setInviteCode(e.target.value); setError(null); }}
+                placeholder="invite code"
+                className="w-full bg-transparent text-[12px] text-ink placeholder:text-muted outline-none"
+              />
+            </div>
+          )}
+
           {error && <p className="text-[11px] text-amber-400">{error}</p>}
 
           <button
             type="submit"
+            disabled={busy}
             className="w-full rounded-lg bg-cyan-500/15 px-3 py-2 text-[12px] font-semibold text-cyan-400 hover:bg-cyan-500/25 transition-colors"
           >
-            {isLogin ? "Warp home" : "Ignite"}
+            {busy ? "Reading the stars..." : isLogin ? "Warp home" : "Ignite"}
           </button>
         </form>
 
         <p className="mt-4 text-[10px] text-muted">
-          Auth is in preview — any credentials work for now.
+          {isLogin ? "Use your Orrery handle and password." : "New galaxies require an invite code."}
         </p>
       </div>
     </div>
