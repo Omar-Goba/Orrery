@@ -3,7 +3,6 @@ import json
 from typing import AsyncGenerator
 
 from backend.services.embeddings import EmbeddingService
-from backend.services.filesystem import FilesystemService
 from backend.services.vectorstore import VectorStore
 from backend.store import paper_store
 
@@ -13,11 +12,9 @@ class StatusAgent:
         self,
         embed_svc: EmbeddingService,
         vstore: VectorStore,
-        fs_svc: FilesystemService,
     ) -> None:
         self._embed  = embed_svc
         self._vstore = vstore
-        self._fs     = fs_svc
 
     async def set_status(
         self, description: str, status: str
@@ -46,14 +43,9 @@ class StatusAgent:
             yield self._sse({"type": "done"})
             return
 
-        # Update in-memory store
-        old_name       = record.symlink_name
+        # Update in-memory store + Chroma metadata — no disk mutation, the
+        # tree is a pure function of records (backend/services/tree.py).
         record.status  = status  # type: ignore[assignment]
-        record.symlink_name = self._fs.make_symlink_name(record)
-
-        # Rename symlink on disk + update Chroma metadata
-        if old_name:
-            self._fs.update_symlink_status(record, old_name)
         self._vstore.update_paper_status(pid, status)
         paper_store.save()
 

@@ -10,14 +10,13 @@ PaperStatus = Literal["read", "toread"]
 class PaperRecord(BaseModel):
     id: str
     filename: str
-    original_path: str
+    source_filename: str
     status: PaperStatus
     title: str | None = None
     author: str | None = None
     year: str | None = None
     summary: str | None = None
     cluster_path: str | None = None
-    symlink_name: str | None = None
     ingested_at: datetime | None = None
     ocr_cached: bool = False
 

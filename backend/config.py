@@ -32,13 +32,23 @@ class Settings(BaseSettings):
     )  # 500 MiB
     is_production: bool = Field(default=False, validation_alias="ORRERY_IS_PRODUCTION")
 
-    @property
-    def input_dir(self) -> Path:
-        return self.dbs_dir / "input"
+    # ── object storage (Tier 2, phase 2) ────────────────────────────────────
+    # Per-file cap; the full quota system lands in phase 6, this just gives
+    # it somewhere to plug in and keeps a single upload from being unbounded.
+    max_pdf_bytes: int = Field(
+        default=100 * 1024 * 1024, validation_alias="ORRERY_MAX_PDF_BYTES"
+    )  # 100 MiB
 
     @property
-    def output_dir(self) -> Path:
-        return self.dbs_dir / "output"
+    def objects_dir(self) -> Path:
+        """Root of the ObjectStore. The only PDF-bytes root in the app —
+        nothing outside `backend/services/objectstore.py` should read or
+        write here directly."""
+        return self.dbs_dir / "objects"
+
+    @property
+    def ocr_cache_dir(self) -> Path:
+        return self.dbs_dir / "ocr_cache"
 
     @property
     def papers_json(self) -> Path:

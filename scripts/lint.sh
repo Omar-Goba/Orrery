@@ -34,7 +34,8 @@ lint_backend() {
     "$ROOT/backend/main.py" \
     "$ROOT/backend/models.py" \
     "$ROOT/backend/services/embeddings.py" \
-    "$ROOT/backend/services/filesystem.py" \
+    "$ROOT/backend/services/objectstore.py" \
+    "$ROOT/backend/services/tree.py" \
     "$ROOT/backend/services/ocr.py" \
     "$ROOT/backend/services/summarize.py" \
     "$ROOT/backend/services/vectorstore.py" \
@@ -44,7 +45,10 @@ lint_backend() {
     "$ROOT/backend/tests/test_auth_unit.py" \
     "$ROOT/backend/tests/test_hierarchical.py" \
     "$ROOT/backend/tests/test_namer.py" \
+    "$ROOT/backend/tests/test_objectstore.py" \
+    "$ROOT/backend/tests/test_papers_api.py" \
     "$ROOT/backend/tests/test_summarize.py" \
+    "$ROOT/backend/tests/test_tree.py" \
     "$ROOT/scripts/bulk_ingest.py"
 }
 

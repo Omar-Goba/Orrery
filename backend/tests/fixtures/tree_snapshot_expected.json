@@ -1,0 +1,184 @@
+{
+  "name": "library",
+  "type": "folder",
+  "paper_id": null,
+  "status": null,
+  "title": null,
+  "author": null,
+  "year": null,
+  "filename": null,
+  "children": [
+    {
+      "name": "Biology",
+      "type": "folder",
+      "paper_id": null,
+      "status": null,
+      "title": null,
+      "author": null,
+      "year": null,
+      "filename": null,
+      "children": [
+        {
+          "name": "jumper2021_alphafold_protein_structure_toread.pdf",
+          "type": "paper",
+          "paper_id": "p7",
+          "status": "toread",
+          "title": "AlphaFold Protein Structure",
+          "author": "Jumper",
+          "year": "2021",
+          "filename": "g.pdf",
+          "children": []
+        },
+        {
+          "name": "zhou2015_deep_learning_for_genomics_read.pdf",
+          "type": "paper",
+          "paper_id": "p8",
+          "status": "read",
+          "title": "Deep Learning for Genomics",
+          "author": "Zhou",
+          "year": "2015",
+          "filename": "h.pdf",
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Computer Vision",
+      "type": "folder",
+      "paper_id": null,
+      "status": null,
+      "title": null,
+      "author": null,
+      "year": null,
+      "filename": null,
+      "children": [
+        {
+          "name": "Image Classification",
+          "type": "folder",
+          "paper_id": null,
+          "status": null,
+          "title": null,
+          "author": null,
+          "year": null,
+          "filename": null,
+          "children": [
+            {
+              "name": "he2016_resnet_deep_residual_learning_read.pdf",
+              "type": "paper",
+              "paper_id": "p4",
+              "status": "read",
+              "title": "ResNet Deep Residual Learning",
+              "author": "He",
+              "year": "2016",
+              "filename": "d.pdf",
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "Segmentation",
+          "type": "folder",
+          "paper_id": null,
+          "status": null,
+          "title": null,
+          "author": null,
+          "year": null,
+          "filename": null,
+          "children": [
+            {
+              "name": "dhariwal2021_diffusion_models_beat_gans_read.pdf",
+              "type": "paper",
+              "paper_id": "p6",
+              "status": "read",
+              "title": "Diffusion Models Beat GANs",
+              "author": "Dhariwal",
+              "year": "2021",
+              "filename": "f.pdf",
+              "children": []
+            },
+            {
+              "name": "he2017_mask_rcnn_toread.pdf",
+              "type": "paper",
+              "paper_id": "p5",
+              "status": "toread",
+              "title": "Mask R-CNN",
+              "author": "He",
+              "year": "2017",
+              "filename": "e.pdf",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Language Models",
+      "type": "folder",
+      "paper_id": null,
+      "status": null,
+      "title": null,
+      "author": null,
+      "year": null,
+      "filename": null,
+      "children": [
+        {
+          "name": "Scaling Laws",
+          "type": "folder",
+          "paper_id": null,
+          "status": null,
+          "title": null,
+          "author": null,
+          "year": null,
+          "filename": null,
+          "children": [
+            {
+              "name": "brown2020_gpt3_few_shot_learners_toread.pdf",
+              "type": "paper",
+              "paper_id": "p3",
+              "status": "toread",
+              "title": "GPT-3 Few Shot Learners",
+              "author": "Brown",
+              "year": "2020",
+              "filename": "c.pdf",
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "Transformers",
+          "type": "folder",
+          "paper_id": null,
+          "status": null,
+          "title": null,
+          "author": null,
+          "year": null,
+          "filename": null,
+          "children": [
+            {
+              "name": "devlin2018_bert_pretraining_read.pdf",
+              "type": "paper",
+              "paper_id": "p2",
+              "status": "read",
+              "title": "BERT Pretraining",
+              "author": "Devlin",
+              "year": "2018",
+              "filename": "b.pdf",
+              "children": []
+            },
+            {
+              "name": "vaswani2017_attention_is_all_you_need_toread.pdf",
+              "type": "paper",
+              "paper_id": "p1",
+              "status": "toread",
+              "title": "Attention Is All You Need",
+              "author": "Vaswani",
+              "year": "2017",
+              "filename": "a.pdf",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

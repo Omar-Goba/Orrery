@@ -2,15 +2,23 @@
 from __future__ import annotations
 import hashlib
 import json
-from pathlib import Path
 from typing import Iterator
 
 from backend.config import settings
 from backend.models import PaperRecord
 
 
-def paper_id_for(path: Path | str) -> str:
-    return hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()[:16]
+def paper_id_for_bytes(data: bytes) -> str:
+    """Content-addressed paper id (plan §4.3).
+
+    Replaces the old path-hash `paper_id_for` — identity now comes from the
+    PDF's bytes, not the path it happened to land at. Re-uploading identical
+    content always yields the same id, which is what makes dedup possible.
+    Callers that stream a large upload should hash incrementally with their
+    own `hashlib.sha256()` and only call `.hexdigest()[:16]` at the end
+    rather than buffering the whole file to pass here.
+    """
+    return hashlib.sha256(data).hexdigest()[:16]
 
 
 class PaperStore:

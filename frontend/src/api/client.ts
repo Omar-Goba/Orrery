@@ -3,14 +3,13 @@ const BASE = "http://localhost:8000";
 export interface PaperRecord {
   id: string;
   filename: string;
-  original_path: string;
+  source_filename: string;
   status: "read" | "toread";
   title: string | null;
   author: string | null;
   year: string | null;
   summary: string | null;
   cluster_path: string | null;
-  symlink_name: string | null;
   ingested_at: string | null;
   ocr_cached: boolean;
 }
@@ -165,10 +164,22 @@ export async function uploadPaper(
   const form = new FormData();
   form.append("file", file);
   form.append("status", status);
-  const { job_id } = await fetch(`${BASE}/api/papers/upload`, {
+  const uploadResp = await fetch(`${BASE}/api/papers/upload`, {
     method: "POST",
     body: form,
-  }).then((r) => r.json());
+  });
+
+  if (uploadResp.status === 409) {
+    // Content-hash dedup: identical bytes already exist in the library.
+    const body = await uploadResp.json();
+    throw new Error(
+      `This PDF is already in the library (${body.paper?.title ?? body.paper?.filename ?? "existing paper"}).`
+    );
+  }
+  if (!uploadResp.ok) {
+    throw new Error(`Upload failed with status ${uploadResp.status}`);
+  }
+  const { job_id } = await uploadResp.json();
 
   return new Promise((resolve, reject) => {
     const es = new EventSource(

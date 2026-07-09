@@ -5,12 +5,24 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
+from backend.config import settings
+
 
 class OCRService:
+    """Extracts text from a PDF, with a cache keyed by `cache_key` — usually
+    the content-hash `paper_id` — rather than by filesystem path.
+
+    Phase 2 moved PDF bytes into the `ObjectStore`; ingest now only ever has
+    a throwaway tempfile copy of the object to hand pypdf (plan §10.1 rule
+    #4: code that needs a real local path copies the stream out and cleans
+    up, it doesn't ask the store for its path). A tempfile's path is not a
+    stable cache key, so the sidecar cache moved to `dbs/ocr_cache/{key}.ocr.json`.
+    """
+
     SIDECAR_SUFFIX = ".ocr.json"
 
-    async def extract(self, pdf_path: Path) -> str:
-        sidecar = self._sidecar_path(pdf_path)
+    async def extract(self, pdf_path: Path, cache_key: str) -> str:
+        sidecar = self._sidecar_path(cache_key)
         if sidecar.exists():
             data = json.loads(sidecar.read_text())
             return data["text"]
@@ -30,8 +42,10 @@ class OCRService:
         except Exception:
             return ""
 
-    def _sidecar_path(self, pdf_path: Path) -> Path:
-        return pdf_path.with_suffix(self.SIDECAR_SUFFIX)
+    def _sidecar_path(self, cache_key: str) -> Path:
+        cache_dir = settings.ocr_cache_dir
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / f"{cache_key}{self.SIDECAR_SUFFIX}"
 
     def _write_cache(self, sidecar: Path, text: str) -> None:
         sidecar.write_text(
