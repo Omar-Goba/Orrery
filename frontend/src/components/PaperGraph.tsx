@@ -44,6 +44,17 @@ interface Star {
   y: number;
   r: number;
   phase: number;
+  twinkleSpeed: number;
+}
+
+interface ShootingStar {
+  id: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  start: number;
+  duration: number;
 }
 
 interface CitationPulse {
@@ -147,6 +158,14 @@ function hash01(id: string, axis: number): number {
   for (let i = 0; i < id.length; i++) {
     hash = Math.imul(31, hash) + id.charCodeAt(i);
   }
+  // Ids that only differ in a trailing digit (e.g. "star-1-8" vs "star-1-9")
+  // otherwise produce hashes 1 apart — an imperceptible change once divided
+  // down to [0,1). Avalanche the bits (Murmur3 fmix32) so every id scatters.
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
   return (hash >>> 0) / 0xffffffff;
 }
 
@@ -242,7 +261,9 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   });
 
   // ── Starfield (precomputed once per canvas build) ──────────────────────
-  const starsRef = useRef<{ near: Star[]; far: Star[] }>({ near: [], far: [] });
+  const starsRef = useRef<{ near: Star[]; mid: Star[]; far: Star[] }>({ near: [], mid: [], far: [] });
+  const shootingStarsRef = useRef<ShootingStar[]>([]);
+  const nextShootingStarAtRef = useRef(0);
 
   // ── Citation pulses + meteors (imperative API) ─────────────────────────
   const pulsesRef = useRef<CitationPulse[]>([]);
@@ -255,7 +276,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       nodesRef.current = [];
       edgesRef.current = [];
       centersRef.current = {};
-      starsRef.current = { near: [], far: [] };
+      starsRef.current = { near: [], mid: [], far: [] };
       return;
     }
     const W = canvas.width  || canvas.offsetWidth  || 0;
@@ -352,16 +373,20 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       for (let i = 0; i < count; i++) {
         const sx = hash01(`star-${seedBase}-${i}`, 1) * W;
         const sy = hash01(`star-${seedBase}-${i}`, 2) * H;
-        const r  = 0.5 + hash01(`star-${seedBase}-${i}`, 3) * 1.0;
+        const r  = 0.6 + hash01(`star-${seedBase}-${i}`, 3) * 1.5;
         const phase = hash01(`star-${seedBase}-${i}`, 4) * Math.PI * 2;
-        stars.push({ x: sx, y: sy, r, phase });
+        const twinkleSpeed = 0.4 + hash01(`star-${seedBase}-${i}`, 5) * 1.6;
+        stars.push({ x: sx, y: sy, r, phase, twinkleSpeed });
       }
       return stars;
     };
     starsRef.current = {
-      far:  mkLayer(45, 1),
-      near: mkLayer(50, 2),
+      far:  mkLayer(280, 1),
+      mid:  mkLayer(190, 3),
+      near: mkLayer(130, 2),
     };
+    shootingStarsRef.current = [];
+    nextShootingStarAtRef.current = performance.now() + 1500 + Math.random() * 2500;
   }, [papers]);
 
   // ── Camera glide helper ──────────────────────────────────────────────────
@@ -544,11 +569,11 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           ctx.fill();
         }
 
-      // ── Starfield — two parallax layers, drifting slowly + offset opposite
-      // to pan so it feels like depth. Cheap: precomputed positions, just a
-      // per-frame sinusoidal wobble + a parallax offset from view.tx/ty. ────
+      // ── Starfield — three parallax layers, drifting slowly + offset opposite
+      // to pan so it feels like depth, each star twinkling on its own cycle.
+      // Cheap: precomputed positions, just a per-frame sinusoidal wobble +
+      // brightness pulse + a parallax offset from view.tx/ty. ────────────────
       const drawStars = (stars: Star[], parallax: number, alpha: number, driftSpeed: number) => {
-        ctx.fillStyle = `rgba(210,225,255,${alpha})`;
         const px = view.tx * parallax;
         const py = view.ty * parallax;
         for (const s of stars) {
@@ -556,13 +581,56 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           const dy = Math.cos(now / 5000 * driftSpeed + s.phase) * 3;
           const x = s.x + px + dx;
           const y = s.y + py + dy;
+          const twinkle = 0.5 + 0.5 * Math.sin(now / 1000 * s.twinkleSpeed + s.phase * 2);
+          ctx.fillStyle = `rgba(210,225,255,${alpha * (0.4 + 0.6 * twinkle)})`;
           ctx.beginPath();
-          ctx.arc(x, y, s.r, 0, Math.PI * 2);
+          ctx.arc(x, y, s.r * (0.8 + 0.4 * twinkle), 0, Math.PI * 2);
           ctx.fill();
         }
       };
-      drawStars(starsRef.current.far,  0.04, 0.15, 0.6);
-      drawStars(starsRef.current.near, 0.09, 0.25, 1.0);
+      drawStars(starsRef.current.far,  0.04, 0.35, 0.6);
+      drawStars(starsRef.current.mid,  0.065, 0.5, 0.8);
+      drawStars(starsRef.current.near, 0.09, 0.7, 1.0);
+
+      // ── Shooting stars — streaks across the field for extra motion. ────────
+      if (now >= nextShootingStarAtRef.current) {
+        const ang = Math.PI * 0.15 + Math.random() * Math.PI * 0.1; // shallow diagonal
+        const len = Math.max(W, H) * (0.5 + Math.random() * 0.4);
+        const x0 = Math.random() * W * 0.6;
+        const y0 = Math.random() * H * 0.3;
+        shootingStarsRef.current.push({
+          id: meteorIdSeq++,
+          x0, y0,
+          x1: x0 + Math.cos(ang) * len,
+          y1: y0 + Math.sin(ang) * len,
+          start: now,
+          duration: 700 + Math.random() * 400,
+        });
+        nextShootingStarAtRef.current = now + 1800 + Math.random() * 3200;
+      }
+      if (shootingStarsRef.current.length) {
+        shootingStarsRef.current = shootingStarsRef.current.filter(ss => now - ss.start < ss.duration);
+        for (const ss of shootingStarsRef.current) {
+          const t = (now - ss.start) / ss.duration;
+          const head = Math.min(1, t * 1.4);
+          const tail = Math.max(0, head - 0.35);
+          const hx = lerp(ss.x0, ss.x1, head);
+          const hy = lerp(ss.y0, ss.y1, head);
+          const tx = lerp(ss.x0, ss.x1, tail);
+          const ty = lerp(ss.y0, ss.y1, tail);
+          const fade = t < 0.8 ? 1 : 1 - (t - 0.8) / 0.2;
+          const grad = ctx.createLinearGradient(tx, ty, hx, hy);
+          grad.addColorStop(0, "rgba(210,225,255,0)");
+          grad.addColorStop(1, `rgba(230,240,255,${0.85 * fade})`);
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = 1.4;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(hx, hy);
+          ctx.stroke();
+        }
+      }
 
       if (!nodes.length) {
         // Empty state is rendered by the parent overlay
