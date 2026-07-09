@@ -127,7 +127,10 @@ class ClusterNamer:
             return {}
 
     def _sanitize(self, raw: str) -> str:
-        line = raw.strip().splitlines()[0].strip()
+        lines = raw.strip().splitlines()
+        if not lines:
+            return "Cluster"
+        line = lines[0].strip()
         # Strip punctuation/special chars but keep letters, digits, spaces
         line = re.sub(r"[^\w\s]", "", line)
         # Collapse whitespace
