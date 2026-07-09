@@ -16,7 +16,10 @@ SERVICE="$(normalize_service "$SERVICE")"
 [[ "$SERVICE" == "both" ]] && SERVICE="all"
 
 install_backend() {
-  run_quiet "install backend packages" bash -lc "cd '$ROOT' && \"$(python_bin)\" -m pip install -e '.[dev]'"
+  if ! command -v uv >/dev/null 2>&1; then
+    die "uv is required for backend installs. Install uv, then run 'make install-backend'."
+  fi
+  run_quiet "install backend packages with uv" bash -lc "cd '$BACKEND_DIR' && uv sync --extra dev"
 }
 
 install_frontend() {

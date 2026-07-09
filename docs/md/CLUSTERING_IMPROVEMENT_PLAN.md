@@ -108,7 +108,7 @@ All changes in `backend/clustering/hierarchical.py`.
   embedding model. Degenerate lopsided splits score poorly and are rejected for free.
 - Cost: silhouette is O(n²) per candidate k; with n ≤ 200 and ≤ 6 candidates per node
   this is milliseconds.
-- Dependency: add `scikit-learn` to `pyproject.toml` (scipy/numpy already present).
+- Dependency: add `scikit-learn` to `backend/pyproject.toml` (scipy/numpy already present).
 
 ### 2b. Cap leaf size
 

@@ -11,27 +11,26 @@ FastAPI backend for the local paper library.
 
 ## Run
 
-From the repository root with the virtual environment activated:
+From the repository root:
 
 ```bash
-uvicorn backend.main:app --reload --port 8000
+make dev SERVICE=backend
 ```
 
 Install backend dependencies first if needed:
 
 ```bash
-pip install -e ".[dev]"
+cd backend
+uv sync --extra dev
 ```
 
 ## Tests
 
-`pytest` is available through the `dev` extra:
+Tests live in `backend/tests/`. From the repository root:
 
 ```bash
-pytest
+make test-backend
 ```
-
-There are currently no test files in the repository.
 
 ## Key Modules
 

@@ -31,6 +31,9 @@ lint_backend() {
     "$ROOT/backend/services/summarize.py" \
     "$ROOT/backend/services/vectorstore.py" \
     "$ROOT/backend/store.py" \
+    "$ROOT/backend/tests/test_hierarchical.py" \
+    "$ROOT/backend/tests/test_namer.py" \
+    "$ROOT/backend/tests/test_summarize.py" \
     "$ROOT/scripts/bulk_ingest.py"
 }
 

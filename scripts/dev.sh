@@ -22,10 +22,10 @@ start_backend() {
     lsof -ti:8000 | xargs kill -9 2>/dev/null || true
   fi
   if [[ "$VERBOSE" == "1" ]]; then
-    (cd "$ROOT" && uvicorn backend.main:app --reload --port 8000) &
+    (cd "$ROOT" && "$(python_bin)" -m uvicorn backend.main:app --reload --port 8000) &
   else
     local log_file="$ROOT/.backend.dev.log"
-    (cd "$ROOT" && uvicorn backend.main:app --reload --port 8000 >"$log_file") &
+    (cd "$ROOT" && "$(python_bin)" -m uvicorn backend.main:app --reload --port 8000 >"$log_file") &
     printf '%sbackend stdout:%s %s\n' "$DIM" "$RESET" "$log_file"
   fi
   PIDS+=("$!")

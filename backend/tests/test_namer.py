@@ -8,6 +8,7 @@ from backend.models import PaperRecord
 @pytest.mark.asyncio
 async def test_name_tree_fallback_dedupes_sibling_names(monkeypatch: pytest.MonkeyPatch) -> None:
     namer = ClusterNamer()
+    monkeypatch.setattr("backend.clustering.namer.settings.openai_api_key", "")
 
     async def fake_name_cluster(_: list[str]) -> str:
         return "Neural Methods"
@@ -42,6 +43,7 @@ async def test_name_tree_fallback_dedupes_sibling_names(monkeypatch: pytest.Monk
 @pytest.mark.asyncio
 async def test_name_tree_preserves_misc(monkeypatch: pytest.MonkeyPatch) -> None:
     namer = ClusterNamer()
+    monkeypatch.setattr("backend.clustering.namer.settings.openai_api_key", "")
 
     async def fake_name_cluster(_: list[str]) -> str:
         return "Main Topic"

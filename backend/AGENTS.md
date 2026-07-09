@@ -12,5 +12,5 @@
 
 ## Verification
 
-- Run `pytest` after backend logic changes when tests exist.
+- Run `make test-backend` from the repository root after backend logic changes when feasible.
 - For API contract changes, also run frontend checks when feasible: `npm run lint` and `npm run build` from `frontend/`.

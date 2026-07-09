@@ -4,7 +4,7 @@ Local paper/library management app for ingesting PDFs, extracting text, embeddin
 
 ## Architecture
 
-- `backend/`: FastAPI service. It stores paper metadata in `dbs/papers.json`, persists vectors in Chroma under `dbs/chroma/`, builds a symlink library under `dbs/output/`, and exposes REST/SSE endpoints under `/api/*`.
+- `backend/`: FastAPI service and Python module. It owns `backend/pyproject.toml`, `backend/.venv/`, `backend/uv.lock`, backend tests, paper metadata in `dbs/papers.json`, Chroma vectors under `dbs/chroma/`, generated symlink output under `dbs/output/`, and REST/SSE endpoints under `/api/*`.
 - `backend/agents/`: OpenAI-routed agents for answering paper-content questions, finding papers semantically, and changing read/to-read status.
 - `backend/services/`: OCR, embedding, vector-store, and filesystem helpers used by the API and ingestion scripts.
 - `frontend/`: React, TypeScript, Vite, and Tailwind UI for the semantic tree, graph view, upload flow, and agent portal.
@@ -22,12 +22,11 @@ Do not commit or expose `.env`. The template documents the required variable nam
 
 ## Backend Setup
 
-Use Python 3.12 or newer from the repository root:
+Use Python 3.12 or newer. Backend dependencies are managed as a module-local uv project:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+cd backend
+uv sync --extra dev
 ```
 
 Or use the Makefile:
@@ -39,10 +38,10 @@ make install-backend
 Run the API:
 
 ```bash
-uvicorn backend.main:app --reload --port 8000
+make dev SERVICE=backend
 ```
 
-Backend tests can be run with `pytest` when test files exist. The `dev` extra installs `pytest` and `pytest-asyncio`; this repository currently has no test files.
+Backend tests live under `backend/tests/` and can be run with `make test-backend`.
 
 ## Frontend Setup
 
@@ -92,6 +91,6 @@ Runtime data lives under `dbs/`:
 - `dbs/chroma/`: generated Chroma vector database.
 - `dbs/papers.json`: generated paper metadata store.
 
-Generated or private files should not be committed or edited unless a task explicitly requires it: `.venv/`, `frontend/node_modules/`, `frontend/dist/`, `__pycache__/`, `*.pyc`, `*.ocr.json`, `dbs/chroma/`, `dbs/papers.json`, `dbs/output/`, and `bulk_ingest_errors.jsonl`.
+Generated or private files should not be committed or edited unless a task explicitly requires it: `.venv/`, `backend/.venv/`, `frontend/node_modules/`, `frontend/dist/`, `__pycache__/`, `*.pyc`, `*.ocr.json`, `dbs/chroma/`, `dbs/papers.json`, `dbs/output/`, and `bulk_ingest_errors.jsonl`.
 
 Use care with `scripts/bulk_ingest.py --reset`; it deletes Chroma data and `dbs/papers.json` before rebuilding.

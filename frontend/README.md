@@ -18,7 +18,7 @@ npm install
 npm run dev
 ```
 
-The dev server defaults to `http://localhost:5173`. The API client currently calls `http://localhost:8000`, so run the backend separately or use `../start.sh` from the repository root.
+The dev server defaults to `http://localhost:5173`. The API client currently calls `http://localhost:8000`, so run the backend separately or use `make dev` from the repository root.
 
 ## Checks
 

@@ -17,7 +17,7 @@ ${BOLD}Daily recipes${RESET}
   ${CYAN}make reindex${RESET}             POST /api/reindex to the running backend
 
 ${BOLD}Scoped recipes${RESET}
-  ${CYAN}make install-backend${RESET}      pip install -e ".[dev]"
+  ${CYAN}make install-backend${RESET}      uv sync --extra dev in backend/
   ${CYAN}make install-frontend${RESET}     npm install
   ${CYAN}make lint-backend${RESET}         Python compile check
   ${CYAN}make lint-frontend${RESET}        npm run lint

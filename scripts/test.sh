@@ -21,7 +21,7 @@ test_backend() {
   if ! "$py" -m pytest --version >/dev/null 2>&1; then
     die "pytest is not installed for $py. Run 'make install-backend' first."
   fi
-  run_quiet "backend tests" "$py" -m pytest
+  run_quiet "backend tests" bash -lc "cd '$ROOT' && '$py' -m pytest backend/tests"
 }
 
 test_frontend() {

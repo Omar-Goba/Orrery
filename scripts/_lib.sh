@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BACKEND_DIR="$ROOT/backend"
 VERBOSE="${VERBOSE:-0}"
 PIDS=()
 
@@ -108,18 +109,18 @@ run_quiet() {
 }
 
 python_bin() {
-  if [[ -x "$ROOT/.venv/bin/python" ]]; then
-    printf '%s' "$ROOT/.venv/bin/python"
+  if [[ -x "$BACKEND_DIR/.venv/bin/python" ]]; then
+    printf '%s' "$BACKEND_DIR/.venv/bin/python"
   else
     printf '%s' "python3"
   fi
 }
 
 activate_venv_if_present() {
-  if [[ -f "$ROOT/.venv/bin/activate" ]]; then
+  if [[ -f "$BACKEND_DIR/.venv/bin/activate" ]]; then
     # shellcheck disable=SC1091
-    source "$ROOT/.venv/bin/activate"
+    source "$BACKEND_DIR/.venv/bin/activate"
   else
-    warn "No .venv found; using current Python environment. Run 'make install-backend' first if needed."
+    warn "No backend/.venv found; using current Python environment. Run 'make install-backend' first if needed."
   fi
 }
