@@ -48,6 +48,13 @@ body {
 
 @keyframes blink { 50% { opacity: 0; } }
 
+@keyframes wiggle {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-4px); }
+  75%      { transform: translateX(4px); }
+}
+.animate-wiggle { animation: wiggle 0.2s ease-in-out; }
+
 /* iPhone safe-area padding for bottom nav */
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 

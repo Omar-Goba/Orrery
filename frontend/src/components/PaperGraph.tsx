@@ -1,6 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { PaperRecord } from "../api/client";
 import type { SimilarityGraph } from "../api/client";
+import { StarfieldCanvas } from "./StarfieldCanvas";
+import { cometStrength } from "../lib/galaxy";
+import { buildConstellationEdges } from "../lib/constellation";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 interface GNode {
@@ -12,6 +15,8 @@ interface GNode {
   paper: PaperRecord;
   l1: string;
   colorIdx: number;
+  /** 1 = ingested right now, fading to 0 at 7 days old. Precomputed per build. */
+  comet: number;
 }
 
 interface CenterInfo {
@@ -20,9 +25,6 @@ interface CenterInfo {
   depth: number;
   colorIdx: number;
 }
-
-// edges store [nodeA_idx, nodeB_idx, shared_path_depth]
-type Edge = [number, number, number];
 
 // View transform: screen = ((world.x * k) + tx, (world.y * k) + ty)
 interface ViewTransform {
@@ -37,24 +39,6 @@ interface CameraAnim {
   start: number;
   duration: number;
   onArrive?: () => void;
-}
-
-interface Star {
-  x: number;
-  y: number;
-  r: number;
-  phase: number;
-  twinkleSpeed: number;
-}
-
-interface ShootingStar {
-  id: number;
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-  start: number;
-  duration: number;
 }
 
 interface CitationPulse {
@@ -96,6 +80,14 @@ export interface PaperGraphHandle {
   pulseCitations(paperIds: string[]): void;
   spawnMeteor(): { arrive: (clusterPath: string) => void; cancel: () => void };
   focusCluster(path: string | null): void; // null = zoom-to-fit / reset view
+  /** One-shot flare when a paper flips toread→read. De-ignition gets no animation. */
+  igniteStar(paperId: string): void;
+}
+
+interface Ignition {
+  x: number;
+  y: number;
+  start: number;
 }
 
 // ── Color palette ───────────────────────────────────────────────────────────
@@ -105,6 +97,10 @@ const PALETTE = [
   { stroke: "#34d399", glow: "rgba(52,211,153,",  dot: "rgba(52,211,153,0.8)"  },
   { stroke: "#f59e0b", glow: "rgba(245,158,11,",  dot: "rgba(245,158,11,0.8)"  },
 ];
+
+// Rogue stars (Misc/Unclustered papers) get a desaturated gray, never a hue —
+// they drift untethered and are excluded from constellation edges.
+const ROGUE_COLOR = { stroke: "#8b94a8", glow: "rgba(139,148,168,", dot: "rgba(139,148,168,0.8)" };
 
 // ── Physics ─────────────────────────────────────────────────────────────────
 const REPULSION  = 5500;
@@ -121,26 +117,6 @@ const MIN_K = 0.4;
 const MAX_K = 6;
 const DRAG_THRESHOLD = 4; // px — below this, mousedown→mouseup is a click, not a pan
 const CAMERA_ANIM_MS = 600;
-
-// ── Edge opacity by shared depth ────────────────────────────────────────────
-// depth 1 = same L1 only (barely visible), depth 2+ = progressively stronger
-const EDGE_MAX_ALPHA = [0, 0.035, 0.10, 0.18, 0.22];
-function edgeMaxAlpha(depth: number): number {
-  return EDGE_MAX_ALPHA[Math.min(depth, EDGE_MAX_ALPHA.length - 1)];
-}
-
-// ── Shared path depth helper ─────────────────────────────────────────────────
-function sharedPathDepth(a: string | null, b: string | null): number {
-  if (!a || !b) return 0;
-  const pa = a.split("/");
-  const pb = b.split("/");
-  let d = 0;
-  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
-    if (pa[i] === pb[i]) d++;
-    else break;
-  }
-  return d;
-}
 
 function jitter(id: string, axis: number): number {
   let hash = axis;
@@ -192,6 +168,21 @@ function rampFade(k: number, kStart: number, kFull: number): number {
   return (k - kStart) / Math.max(0.0001, kFull - kStart);
 }
 
+// Render-only "breathing" wobble for settled nodes, deterministic per id so
+// it's stable across reloads. Shared by node draw and constellation edges so
+// lines stay pinned to stars instead of lagging behind the wobble.
+function driftOffset(id: string, idleT: number): { dx: number; dy: number } {
+  const freq = 0.15 + hash01(id, 11) * 0.1; // ~4-8s period range
+  const ampX = 2 + hash01(id, 12) * 2;
+  const ampY = 2 + hash01(id, 13) * 2;
+  const phaseX = hash01(id, 14) * Math.PI * 2;
+  const phaseY = hash01(id, 15) * Math.PI * 2;
+  return {
+    dx: Math.sin(idleT * freq + phaseX) * ampX,
+    dy: Math.cos(idleT * freq + phaseY) * ampY,
+  };
+}
+
 let meteorIdSeq = 1;
 let pulseIdSeq = 1;
 
@@ -209,6 +200,10 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   pulseTarget?: { x: number; y: number };
   /** Fired when the user clicks a cluster aura/label to glide the camera there. */
   onFocusCluster?: (path: string) => void;
+  /** Arrival dolly: start zoomed out at this k and glide to k=1 on first build. */
+  initialView?: { k: number };
+  /** Cluster path to keep fully visible in the leaf-label pass (autopilot tour). */
+  highlightPath?: string | null;
 }>(function PaperGraph({
   papers,
   onHover,
@@ -218,6 +213,8 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   similarity,
   pulseTarget,
   onFocusCluster,
+  initialView,
+  highlightPath,
 }, ref) {
   const canvasRef  = useRef<HTMLCanvasElement>(null);
   const insetLeft   = insets?.left   ?? 55;
@@ -238,8 +235,16 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   const onFocusClusterRef = useRef(onFocusCluster);
   useEffect(() => { onFocusClusterRef.current = onFocusCluster; }, [onFocusCluster]);
 
+  const initialViewRef = useRef(initialView);
+  useEffect(() => { initialViewRef.current = initialView; }, [initialView]);
+  const didInitialDollyRef = useRef(false);
+
+  const highlightPathRef = useRef(highlightPath);
+  useEffect(() => { highlightPathRef.current = highlightPath; }, [highlightPath]);
+
   const nodesRef   = useRef<GNode[]>([]);
-  const edgesRef   = useRef<Edge[]>([]);
+  const constellationEdgesRef = useRef<[number, number][]>([]);
+  const leafCentersRef = useRef<Record<string, { x: number; y: number; count: number; colorIdx: number }>>({});
   const centersRef = useRef<Record<string, CenterInfo>>({});
   const hovRef     = useRef<GNode | null>(null);
   const rafRef     = useRef<number>(0);
@@ -260,23 +265,18 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     downY: 0,
   });
 
-  // ── Starfield (precomputed once per canvas build) ──────────────────────
-  const starsRef = useRef<{ near: Star[]; mid: Star[]; far: Star[] }>({ near: [], mid: [], far: [] });
-  const shootingStarsRef = useRef<ShootingStar[]>([]);
-  const nextShootingStarAtRef = useRef(0);
-
   // ── Citation pulses + meteors (imperative API) ─────────────────────────
   const pulsesRef = useRef<CitationPulse[]>([]);
   const meteorsRef = useRef<Map<number, Meteor>>(new Map());
+  const ignitionsRef = useRef<Ignition[]>([]);
 
   // ── Build graph ─────────────────────────────────────────────────────────
   const buildGraph = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !papers.length) {
       nodesRef.current = [];
-      edgesRef.current = [];
+      constellationEdgesRef.current = [];
       centersRef.current = {};
-      starsRef.current = { near: [], mid: [], far: [] };
       return;
     }
     const W = canvas.width  || canvas.offsetWidth  || 0;
@@ -346,47 +346,25 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         y: home.y + jitter(p.id, 2),
         vx: 0, vy: 0,
         paper: p, l1, colorIdx,
+        comet: cometStrength(p.ingested_at),
       };
     });
 
-    // ── Build edges (depth-graded) ────────────────────────────────────────
-    const edges: Edge[] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const depth = sharedPathDepth(
-          nodes[i].paper.cluster_path,
-          nodes[j].paper.cluster_path,
-        );
-        if (depth >= 1) edges.push([i, j, depth]);
-      }
-    }
-
     nodesRef.current = nodes;
-    edgesRef.current = edges;
+    constellationEdgesRef.current = []; // rebuilt once physics settles — see the render loop
     tickRef.current  = 0;
     hovRef.current   = null;
 
-    // ── Starfield — precomputed once, seeded off canvas dims so it's stable
-    // across rebuilds of the same size but varies with real dims. ─────────
-    const mkLayer = (count: number, seedBase: number): Star[] => {
-      const stars: Star[] = [];
-      for (let i = 0; i < count; i++) {
-        const sx = hash01(`star-${seedBase}-${i}`, 1) * W;
-        const sy = hash01(`star-${seedBase}-${i}`, 2) * H;
-        const r  = 0.6 + hash01(`star-${seedBase}-${i}`, 3) * 1.5;
-        const phase = hash01(`star-${seedBase}-${i}`, 4) * Math.PI * 2;
-        const twinkleSpeed = 0.4 + hash01(`star-${seedBase}-${i}`, 5) * 1.6;
-        stars.push({ x: sx, y: sy, r, phase, twinkleSpeed });
-      }
-      return stars;
-    };
-    starsRef.current = {
-      far:  mkLayer(280, 1),
-      mid:  mkLayer(190, 3),
-      near: mkLayer(130, 2),
-    };
-    shootingStarsRef.current = [];
-    nextShootingStarAtRef.current = performance.now() + 1500 + Math.random() * 2500;
+    if (!didInitialDollyRef.current && initialViewRef.current) {
+      didInitialDollyRef.current = true;
+      viewRef.current = { k: initialViewRef.current.k, tx: 0, ty: 0 };
+      cameraAnimRef.current = {
+        from: { ...viewRef.current },
+        to: { k: 1, tx: 0, ty: 0 },
+        start: performance.now(),
+        duration: 600,
+      };
+    }
   }, [papers]);
 
   // ── Camera glide helper ──────────────────────────────────────────────────
@@ -484,7 +462,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       if (W < 10 || H < 10) { rafRef.current = requestAnimationFrame(loop); return; }
 
       const nodes   = nodesRef.current;
-      const edges   = edgesRef.current;
       const centers = centersRef.current;
       const settled = tickRef.current >= SETTLE_AT;
 
@@ -537,6 +514,26 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           if (n.y > H - bottom) { n.y = H - bottom; n.vy *= -0.3; }
         }
         tickRef.current++;
+        // Positions are meaningless before physics rests — build the per-leaf
+        // constellation MST exactly once, right as the sim settles. A fresh
+        // `buildGraph` (new upload, refetch) resets tickRef so this reruns.
+        if (tickRef.current === SETTLE_AT) {
+          constellationEdgesRef.current = buildConstellationEdges(
+            nodes.map(n => ({ id: n.id, x: n.x, y: n.y, leaf: n.paper.cluster_path ?? "Unclustered" }))
+          );
+          const leafAgg: Record<string, { sx: number; sy: number; count: number; colorIdx: number }> = {};
+          for (const n of nodes) {
+            const leaf = n.paper.cluster_path ?? "Unclustered";
+            if (leaf === "Misc" || leaf === "Unclustered") continue;
+            const agg = leafAgg[leaf] ?? (leafAgg[leaf] = { sx: 0, sy: 0, count: 0, colorIdx: n.colorIdx });
+            agg.sx += n.x; agg.sy += n.y; agg.count++;
+          }
+          const centers: typeof leafCentersRef.current = {};
+          for (const [leaf, agg] of Object.entries(leafAgg)) {
+            centers[leaf] = { x: agg.sx / agg.count, y: agg.sy / agg.count, count: agg.count, colorIdx: agg.colorIdx };
+          }
+          leafCentersRef.current = centers;
+        }
       }
 
       // ── Camera animation (glide toward a focus target) ──────────────────
@@ -569,69 +566,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           ctx.fill();
         }
 
-      // ── Starfield — three parallax layers, drifting slowly + offset opposite
-      // to pan so it feels like depth, each star twinkling on its own cycle.
-      // Cheap: precomputed positions, just a per-frame sinusoidal wobble +
-      // brightness pulse + a parallax offset from view.tx/ty. ────────────────
-      const drawStars = (stars: Star[], parallax: number, alpha: number, driftSpeed: number) => {
-        const px = view.tx * parallax;
-        const py = view.ty * parallax;
-        for (const s of stars) {
-          const dx = Math.sin(now / 4000 * driftSpeed + s.phase) * 3;
-          const dy = Math.cos(now / 5000 * driftSpeed + s.phase) * 3;
-          const x = s.x + px + dx;
-          const y = s.y + py + dy;
-          const twinkle = 0.5 + 0.5 * Math.sin(now / 1000 * s.twinkleSpeed + s.phase * 2);
-          ctx.fillStyle = `rgba(210,225,255,${alpha * (0.4 + 0.6 * twinkle)})`;
-          ctx.beginPath();
-          ctx.arc(x, y, s.r * (0.8 + 0.4 * twinkle), 0, Math.PI * 2);
-          ctx.fill();
-        }
-      };
-      drawStars(starsRef.current.far,  0.04, 0.35, 0.6);
-      drawStars(starsRef.current.mid,  0.065, 0.5, 0.8);
-      drawStars(starsRef.current.near, 0.09, 0.7, 1.0);
-
-      // ── Shooting stars — streaks across the field for extra motion. ────────
-      if (now >= nextShootingStarAtRef.current) {
-        const ang = Math.PI * 0.15 + Math.random() * Math.PI * 0.1; // shallow diagonal
-        const len = Math.max(W, H) * (0.5 + Math.random() * 0.4);
-        const x0 = Math.random() * W * 0.6;
-        const y0 = Math.random() * H * 0.3;
-        shootingStarsRef.current.push({
-          id: meteorIdSeq++,
-          x0, y0,
-          x1: x0 + Math.cos(ang) * len,
-          y1: y0 + Math.sin(ang) * len,
-          start: now,
-          duration: 700 + Math.random() * 400,
-        });
-        nextShootingStarAtRef.current = now + 1800 + Math.random() * 3200;
-      }
-      if (shootingStarsRef.current.length) {
-        shootingStarsRef.current = shootingStarsRef.current.filter(ss => now - ss.start < ss.duration);
-        for (const ss of shootingStarsRef.current) {
-          const t = (now - ss.start) / ss.duration;
-          const head = Math.min(1, t * 1.4);
-          const tail = Math.max(0, head - 0.35);
-          const hx = lerp(ss.x0, ss.x1, head);
-          const hy = lerp(ss.y0, ss.y1, head);
-          const tx = lerp(ss.x0, ss.x1, tail);
-          const ty = lerp(ss.y0, ss.y1, tail);
-          const fade = t < 0.8 ? 1 : 1 - (t - 0.8) / 0.2;
-          const grad = ctx.createLinearGradient(tx, ty, hx, hy);
-          grad.addColorStop(0, "rgba(210,225,255,0)");
-          grad.addColorStop(1, `rgba(230,240,255,${0.85 * fade})`);
-          ctx.strokeStyle = grad;
-          ctx.lineWidth = 1.4;
-          ctx.lineCap = "round";
-          ctx.beginPath();
-          ctx.moveTo(tx, ty);
-          ctx.lineTo(hx, hy);
-          ctx.stroke();
-        }
-      }
-
       if (!nodes.length) {
         // Empty state is rendered by the parent overlay
         rafRef.current = requestAnimationFrame(loop);
@@ -651,6 +585,13 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         for (const nb of simGraph![hov.id]) simNeighborIds.add(nb.id);
       }
       const dimFactor = hasSimHighlight ? 0.18 : 1;
+
+      // ── Idle drift ("breathing") — settled nodes get a tiny render-only
+      // sinusoidal wobble, derived deterministically from id so it's stable
+      // across reloads. Does not feed back into n.x/n.y or velocity. Shared
+      // by nodes and constellation edges via driftOffset() so lines stay
+      // pinned to stars. ───────────────────────────────────────────────────
+      const idleT = now / 1000;
 
       // ── Cluster auras (L1 large, L2 smaller, deeper = skip) ───────────
       // Ghost label alpha fades in/out with k: most visible around k≈1,
@@ -687,25 +628,45 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         }
       }
 
-      // ── Edges (depth-graded opacity + distance decay) ──────────────────
-      for (const [ai, bi, depth] of edges) {
-        const a   = nodes[ai];
-        const b   = nodes[bi];
+      // ── Constellation edges — per-leaf MST, thin cluster-hue lines pinned
+      // to the same idle-drifted positions the stars render at. ──────────
+      const alpha = 0.22 * (hasSimHighlight ? dimFactor : 1);
+      for (const [ai, bi] of constellationEdgesRef.current) {
+        const a = nodes[ai];
+        const b = nodes[bi];
+        if (!a || !b) continue;
         const col = PALETTE[a.colorIdx % PALETTE.length];
-        const dx  = b.x - a.x;
-        const dy  = b.y - a.y;
-        const d   = Math.sqrt(dx * dx + dy * dy);
-        // Deeper shared ancestry → stronger max alpha; farther apart → fade out
-        const maxA   = edgeMaxAlpha(depth);
-        let alpha  = Math.max(0, maxA - d / 1000);
-        if (hasSimHighlight) alpha *= dimFactor;
-        if (alpha < 0.005) continue;
+        const offA = settled ? driftOffset(a.id, idleT) : { dx: 0, dy: 0 };
+        const offB = settled ? driftOffset(b.id, idleT) : { dx: 0, dy: 0 };
         ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
+        ctx.moveTo(a.x + offA.dx, a.y + offA.dy);
+        ctx.lineTo(b.x + offB.dx, b.y + offB.dy);
         ctx.strokeStyle = col.glow + alpha.toFixed(3) + ")";
-        ctx.lineWidth   = depth >= 3 ? 1.5 : 1;
+        ctx.lineWidth = 1;
         ctx.stroke();
+      }
+
+      // ── Constellation leaf labels — only leaves with ≥3 members, faded
+      // in over a mid zoom range so they don't confetti at extremes. The
+      // tour's active stop stays fully visible regardless of zoom (still
+      // capped at the same 0.4 alpha budget, just without the k-based fade
+      // dragging it toward 0 mid-flight). ────────────────────────────────
+      const leafLabelFade = triangleFade(view.k, 0.6, 1.2, 2.6);
+      const highlightPath = highlightPathRef.current;
+      for (const [leaf, c] of Object.entries(leafCentersRef.current)) {
+        if (c.count < 3) continue;
+        const isHighlighted = !!highlightPath && leaf === highlightPath;
+        const fade = isHighlighted ? 1 : leafLabelFade;
+        if (fade <= 0.001) continue;
+        const col = PALETTE[c.colorIdx % PALETTE.length];
+        ctx.save();
+        ctx.globalAlpha = 0.4 * fade;
+        ctx.fillStyle = col.stroke;
+        ctx.font = "600 11px Inter, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(leaf.split("/").pop()!, c.x, c.y);
+        ctx.restore();
       }
 
       // ── Constellation edges — real embedding-similarity neighbors ───────
@@ -739,11 +700,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         }
       }
 
-      // ── Idle drift ("breathing") — settled nodes get a tiny render-only
-      // sinusoidal wobble, derived deterministically from id so it's stable
-      // across reloads. Does not feed back into n.x/n.y or velocity. ──────
-      const idleT = now / 1000;
-
       // ── Node LOD label thresholds ────────────────────────────────────────
       const titleFade  = rampFade(view.k, 1.8, 2.3);
       const metaFade   = rampFade(view.k, 3.0, 3.6);
@@ -758,53 +714,69 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         const isHov = hov?.id === n.id;
         const isSimNeighbor = hasSimHighlight && simNeighborIds.has(n.id);
         const nodeDim = hasSimHighlight && !isHov && !isSimNeighbor ? dimFactor : 1;
-        const col   = PALETTE[n.colorIdx % PALETTE.length];
+        const isRead  = n.paper.status === "read";
+        const isRogue = n.l1 === "Misc" || n.l1 === "Unclustered";
+        const col     = isRogue ? ROGUE_COLOR : PALETTE[n.colorIdx % PALETTE.length];
+        const rogueDim = isRogue ? 0.7 : 1;
         const r     = isHov ? NODE_R + 4 : NODE_R;
 
         let renderX = n.x;
         let renderY = n.y;
         if (settled) {
-          const freq = 0.15 + hash01(n.id, 11) * 0.1; // ~4-8s period range
-          const ampX = 2 + hash01(n.id, 12) * 2;
-          const ampY = 2 + hash01(n.id, 13) * 2;
-          const phaseX = hash01(n.id, 14) * Math.PI * 2;
-          const phaseY = hash01(n.id, 15) * Math.PI * 2;
-          renderX = n.x + Math.sin(idleT * freq + phaseX) * ampX;
-          renderY = n.y + Math.cos(idleT * freq + phaseY) * ampY;
+          const off = driftOffset(n.id, idleT);
+          renderX = n.x + off.dx;
+          renderY = n.y + off.dy;
         }
 
-        // Glow halo
-        const glowR = r * (isHov ? 5.5 : 3.5);
-        const grd   = ctx.createRadialGradient(renderX, renderY, r * 0.1, renderX, renderY, glowR);
-        grd.addColorStop(0, col.glow + ((isHov ? 0.55 : 0.3) * nodeDim).toFixed(3) + ")");
-        grd.addColorStop(1, "transparent");
-        ctx.beginPath();
-        ctx.arc(renderX, renderY, glowR, 0, Math.PI * 2);
-        ctx.fillStyle = grd;
-        ctx.fill();
+        // Comet trail (recency) — fixed shared angle, drawn before the star
+        // itself so the star's halo sits on top of the trail's near end.
+        if (n.comet > 0.001) {
+          const len = 26 * n.comet;
+          const ang = -35 * (Math.PI / 180);
+          const tx2 = renderX + Math.cos(ang) * len;
+          const ty2 = renderY + Math.sin(ang) * len;
+          ctx.beginPath();
+          ctx.moveTo(renderX, renderY);
+          ctx.lineTo(tx2, ty2);
+          ctx.strokeStyle = `rgba(235,242,255,${(0.35 * n.comet * nodeDim).toFixed(3)})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
 
-        // Fill
-        ctx.beginPath();
-        ctx.arc(renderX, renderY, r, 0, Math.PI * 2);
-        ctx.fillStyle = col.glow + ((isHov ? 0.25 : 0.1) * nodeDim).toFixed(3) + ")";
-        ctx.fill();
+        if (isRead) {
+          // ── Ignited star: single halo + solid warm-white core ──
+          const glowR = r * (isHov ? 5.5 : 3.5);
+          const grd = ctx.createRadialGradient(renderX, renderY, r * 0.1, renderX, renderY, glowR);
+          grd.addColorStop(0, col.glow + ((isHov ? 0.5 : 0.3) * nodeDim * rogueDim).toFixed(3) + ")");
+          grd.addColorStop(1, "transparent");
+          ctx.beginPath();
+          ctx.arc(renderX, renderY, glowR, 0, Math.PI * 2);
+          ctx.fillStyle = grd;
+          ctx.fill();
 
-        // Ring
-        ctx.beginPath();
-        ctx.arc(renderX, renderY, r, 0, Math.PI * 2);
-        ctx.globalAlpha = nodeDim;
-        ctx.strokeStyle = col.stroke + (isHov ? "ff" : "bb");
-        ctx.lineWidth   = isHov ? 2 : 1.5;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+          ctx.beginPath();
+          ctx.arc(renderX, renderY, isHov ? 3.2 : 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(240,246,255,${(0.95 * nodeDim * rogueDim).toFixed(3)})`;
+          ctx.fill();
+        } else {
+          // ── Protostar: hollow ring in the cluster hue, faint halo, no core ──
+          const glowR = r * 2.2;
+          const grd = ctx.createRadialGradient(renderX, renderY, r * 0.1, renderX, renderY, glowR);
+          grd.addColorStop(0, col.glow + ((isHov ? 0.22 : 0.10) * nodeDim * rogueDim).toFixed(3) + ")");
+          grd.addColorStop(1, "transparent");
+          ctx.beginPath();
+          ctx.arc(renderX, renderY, glowR, 0, Math.PI * 2);
+          ctx.fillStyle = grd;
+          ctx.fill();
 
-        // Core dot
-        ctx.beginPath();
-        ctx.arc(renderX, renderY, r * 0.28, 0, Math.PI * 2);
-        ctx.fillStyle = col.dot;
-        ctx.globalAlpha = nodeDim;
-        ctx.fill();
-        ctx.globalAlpha = 1;
+          ctx.beginPath();
+          ctx.arc(renderX, renderY, isHov ? 4.5 : 3.5, 0, Math.PI * 2);
+          ctx.globalAlpha = nodeDim * rogueDim;
+          ctx.strokeStyle = col.stroke + (isHov ? "dd" : "88");
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
 
         // ── LOD text labels (title, then author/year) — culled to visible
         // world-space bounds, faded in over a k-range. ────────────────────
@@ -833,6 +805,29 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
               }
             }
             ctx.restore();
+          }
+        }
+      }
+
+      // ── Ignition flares — one-shot expanding ring when a star lights up ──
+      if (ignitionsRef.current.length) {
+        ignitionsRef.current = ignitionsRef.current.filter(ig => now - ig.start < 500);
+        for (const ig of ignitionsRef.current) {
+          const t = (now - ig.start) / 500;
+          const ringR = lerp(4, 34, easeOutCubic(t));
+          const ringA = 1 - t;
+          ctx.beginPath();
+          ctx.arc(ig.x, ig.y, ringR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(240,246,255,${ringA.toFixed(3)})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          if (t < 0.3) {
+            const overshoot = 1 - t / 0.3;
+            ctx.beginPath();
+            ctx.arc(ig.x, ig.y, 2.5 + overshoot * 2, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(240,246,255,${overshoot.toFixed(3)})`;
+            ctx.fill();
           }
         }
       }
@@ -1159,20 +1154,29 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     focusCluster(path: string | null) {
       glideToClusterPath(path);
     },
+    igniteStar(paperId: string) {
+      const n = nodesRef.current.find(n => n.id === paperId);
+      if (n) ignitionsRef.current.push({ x: n.x, y: n.y, start: performance.now() });
+    },
   }), [glideToClusterPath]);
 
+  const getParallax = useCallback(() => viewRef.current, []);
+
   return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full block"
-      style={{ cursor }}
-      onMouseMove={onMouseMove}
-      onMouseDown={onMouseDown}
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseLeave}
-      onWheel={onWheel}
-      onDoubleClick={onDoubleClick}
-    />
+    <div className="relative w-full h-full">
+      <StarfieldCanvas className="absolute inset-0 w-full h-full pointer-events-none" getParallax={getParallax} />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full block"
+        style={{ cursor }}
+        onMouseMove={onMouseMove}
+        onMouseDown={onMouseDown}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseLeave}
+        onWheel={onWheel}
+        onDoubleClick={onDoubleClick}
+      />
+    </div>
   );
 });
 

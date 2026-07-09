@@ -36,6 +36,8 @@ export function AgentPortal({
   onUploadCancel,
   hideHeader = false,
   variant = "panel",
+  prefill,
+  disableUpload = false,
 }: {
   onUploadDone?: () => void;
   onOpenPaper?: (paper: PaperRecord) => void;
@@ -51,6 +53,10 @@ export function AgentPortal({
   hideHeader?: boolean;
   /** "panel" = classic full-height column; "float" = omnibar + expandable glass sheet. */
   variant?: "panel" | "float";
+  /** Text to drop into the omnibar + focus signal — bump `token` to re-trigger for the same text. */
+  prefill?: { text: string; token: number };
+  /** Observer mode: chat still works, but uploads mutate a single-user backend. */
+  disableUpload?: boolean;
 }) {
   const isFloat = variant === "float";
   const [msgs, setMsgs] = useState<Msg[]>([
@@ -90,7 +96,7 @@ export function AgentPortal({
 
   // ── Float-only: drop a PDF anywhere on the window to ingest it ────────────
   useEffect(() => {
-    if (!isFloat) return;
+    if (!isFloat || disableUpload) return;
     let depth = 0;
     const hasFiles = (e: DragEvent) =>
       Array.from(e.dataTransfer?.types ?? []).includes("Files");
@@ -118,12 +124,23 @@ export function AgentPortal({
       window.removeEventListener("dragleave", onLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [isFloat]);
+  }, [isFloat, disableUpload]);
 
   // Keep the transcript pinned to the latest message when the sheet opens
   useEffect(() => {
     if (open) bottomRef.current?.scrollIntoView();
   }, [open]);
+
+  // "Ask Oracle" from a StarCard drops a prefilled question into the omnibar
+  // and focuses it — bump `prefill.token` to re-trigger for the same text.
+  useEffect(() => {
+    if (!prefill) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing to an external token, not derivable during render
+    setInput(prefill.text);
+    if (isFloat) setOpen(true);
+    inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.token, isFloat]);
 
   const scrollDown = () =>
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
@@ -356,16 +373,18 @@ export function AgentPortal({
             )}
           </button>
         )}
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={busy}
-          aria-label="Upload a PDF"
-          title="Upload a PDF"
-          className="shrink-0 inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-muted hover:text-cyan-400 transition-colors disabled:opacity-40"
-        >
-          <Paperclip size={15} />
-          {!isFloat && <span className="hidden xl:inline text-[11px] font-semibold">Upload PDF</span>}
-        </button>
+        {!disableUpload && (
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            aria-label="Upload a PDF"
+            title="Upload a PDF"
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-muted hover:text-cyan-400 transition-colors disabled:opacity-40"
+          >
+            <Paperclip size={15} />
+            {!isFloat && <span className="hidden xl:inline text-[11px] font-semibold">Upload PDF</span>}
+          </button>
+        )}
         <input
           ref={inputRef}
           className="flex-1 bg-transparent text-sm text-ink placeholder-muted outline-none"
