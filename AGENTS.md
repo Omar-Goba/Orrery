@@ -18,6 +18,7 @@ Do not read, expose, modify, or commit secrets from `.env`.
 Do not modify or commit generated/runtime dependency files unless explicitly requested:
 
 - `.venv/`
+- `backend/.venv/`
 - `frontend/node_modules/`
 - `frontend/dist/`
 - `__pycache__/`
@@ -30,29 +31,26 @@ Do not modify or commit generated/runtime dependency files unless explicitly req
 
 ## Backend Setup
 
-Use Python 3.12 or newer.
+Use Python 3.12 or newer. Backend dependencies are module-local under `backend/`.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+cd backend
+uv sync --extra dev
 ```
 
 Run the backend from the repository root:
 
 ```bash
-uvicorn backend.main:app --reload --port 8000
+make dev SERVICE=backend
 ```
 
 Run backend tests, if tests are present:
 
 ```bash
-pytest
+make test-backend
 ```
 
-`pytest` and `pytest-asyncio` are available through the `dev` extra, but this repository may not always contain test files.
-
-Current status: no test files are present in the repository.
+`pytest` and `pytest-asyncio` are available through the backend `dev` extra. Backend tests live under `backend/tests/`.
 
 ## Frontend Setup
 
@@ -107,9 +105,34 @@ Warning: `make dev` kills any process already listening on port `8000` before st
 
 - Prefer small, focused changes.
 - Inspect the relevant code before editing; do not assume behavior from file names alone.
+- Treat this as a monorepo: backend Python state belongs under `backend/`, frontend Node state belongs under `frontend/`, and root scripts/Makefile only orchestrate modules.
 - If changing API models, endpoints, or response shapes, update both backend code and frontend client/types.
 - If adding dependencies, update the appropriate manifest and lockfile:
-  - Python dependencies: `pyproject.toml`.
+  - Python dependencies: `backend/pyproject.toml` and `backend/uv.lock`.
   - Frontend dependencies: `frontend/package.json` and `frontend/package-lock.json`.
+- Keep tests service-level: backend tests live in `backend/tests/`; frontend tests should live under `frontend/` if added.
+- Prefer root Make recipes for everyday verification: `make lint`, `make test`, `make dev`, and scoped `SERVICE=backend|frontend` variants.
+- Makefile/script output should stay quiet and readable by default, keep stderr visible, and expose full stdout through verbose mode (`V=1` for Make, `-v` for scripts).
+- Any long-running recipe or script that spawns child processes must trap Ctrl-C and terminate spawned PIDs.
 - Avoid destructive data operations. In particular, `scripts/bulk_ingest.py --reset` deletes Chroma data and `dbs/papers.json`.
+- Do not run real migrations such as `scripts/bulk_ingest.py --revector` or destructive resets unless the user explicitly approves local runtime data changes.
 - Do not modify generated local data under `dbs/` unless the task explicitly requires it.
+
+## Commit Discipline
+
+- Commit every completed task unless the user explicitly says not to commit.
+- Use atomic commits: one coherent change per commit, no mixed unrelated work.
+- Before committing, inspect `git status`, `git diff --stat`, and the staged diff.
+- Stage only files touched for the current task; leave unrelated user or agent changes unstaged.
+- Do not commit generated/private files unless explicitly requested.
+- Use this commit message template exactly:
+
+```text
+<type>(<scope>): <summary>
+<desc that is written in a fun and playful way>
+```
+
+- Keep `<type>` conventional and lowercase, such as `feat`, `fix`, `chore`, `docs`, `test`, `refactor`, or `build`.
+- Keep `<scope>` short and module-oriented, such as `backend`, `frontend`, `scripts`, `make`, `docs`, or `clustering`.
+- Keep `<summary>` imperative and concise.
+- Make the description playful but still useful: mention what changed, why it matters, and any verification caveat.
