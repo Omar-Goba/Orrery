@@ -54,7 +54,7 @@ export default function App() {
   };
 
   const modeFor = (galaxy: GalaxyId): GalaxyMode =>
-    session?.isOwner && galaxy === OWNER_USERNAME ? "owner" : "observer";
+    session?.username === galaxy ? "owner" : "observer";
 
   return (
     <>
@@ -73,6 +73,7 @@ export default function App() {
           key={displayed.galaxy}
           galaxy={displayed.galaxy}
           mode={modeFor(displayed.galaxy)}
+          session={session}
           onExitToUniverse={() => beginWarp(displayed.galaxy, true)}
           onLogout={
             modeFor(displayed.galaxy) === "owner"

@@ -16,7 +16,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.auth.db import init_db
 from backend.auth.router import router as auth_router
+from backend.accounting import (
+    QuotaExceeded,
+    decrement_storage_used,
+    ensure_can_store,
+    get_storage_snapshot,
+    increment_storage_used,
+)
 from backend.config import settings
+from backend.keeper import router as keeper_router
 from backend.models import (
     ChatRequest,
     PaperRecord,
@@ -27,7 +35,7 @@ from backend.models import (
     UploadResponse,
 )
 from backend.services.embeddings import EmbeddingService
-from backend.services.objectstore import LocalObjectStore, ObjectStore
+from backend.services.objectstore import LocalObjectStore, ObjectSizeLimitExceeded, ObjectStore
 from backend.services.ocr import OCRService
 from backend.services.similarity import top_k_neighbors
 from backend.services.tree import build_tree
@@ -90,6 +98,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(tour_router)
+app.include_router(keeper_router)
 
 
 def _object_key_for(paper_id: str) -> str:
@@ -111,6 +120,24 @@ def _stream_object(stream: BinaryIO, chunk_size: int = _UPLOAD_CHUNK_SIZE):
             yield chunk
     finally:
         stream.close()
+
+
+def _quota_response(exc: QuotaExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=507,
+        content={
+            "error": "quota_exceeded",
+            "used": exc.snapshot.used,
+            "quota": exc.snapshot.quota,
+        },
+    )
+
+
+def _file_too_large_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={"error": "file_too_large", "max_bytes": settings.max_pdf_bytes},
+    )
 
 
 # ── papers ─────────────────────────────────────────────────────────────────
@@ -155,7 +182,10 @@ async def delete_paper(paper_id: str, space: UserSpace = Depends(current_space))
         raise HTTPException(404, "Paper not found")
 
     key = _object_key_for(paper_id)
+    stat = space.objects.stat(key)
     space.objects.delete(key)
+    if stat is not None:
+        decrement_storage_used(space.user_id, stat.size_bytes)
     space.vstore.delete_paper(paper_id)
     space.papers.delete(paper_id)
     await space.papers.save()
@@ -233,6 +263,17 @@ async def upload_paper(
         raise HTTPException(400, "status must be 'read' or 'toread'")
 
     source_filename = Path(file.filename or "upload.pdf").name
+    snapshot = get_storage_snapshot(space.user_id)
+    file_content_length = file.headers.get("content-length")
+    if file_content_length is not None:
+        try:
+            content_length_bytes = int(file_content_length)
+        except ValueError:
+            content_length_bytes = 0
+        if content_length_bytes > settings.max_pdf_bytes:
+            return _file_too_large_response()
+        if content_length_bytes > snapshot.remaining:
+            return _quota_response(QuotaExceeded(snapshot))
 
     # Hash incrementally while spooling to a scratch tempfile — never buffer
     # the whole upload in memory, and the content hash IS the paper id
@@ -250,7 +291,9 @@ async def upload_paper(
                     break
                 size += len(chunk)
                 if size > settings.max_pdf_bytes:
-                    raise HTTPException(413, "PDF exceeds the maximum allowed size")
+                    return _file_too_large_response()
+                if size > snapshot.remaining:
+                    return _quota_response(QuotaExceeded(snapshot))
                 hasher.update(chunk)
                 spool.write(chunk)
 
@@ -270,7 +313,20 @@ async def upload_paper(
 
         key = _object_key_for(paper_id)
         with open(tmp_path, "rb") as spooled:
-            space.objects.put(key, spooled, max_bytes=settings.max_pdf_bytes)
+            try:
+                ensure_can_store(space.user_id, size)
+                written = space.objects.put(
+                    key,
+                    spooled,
+                    max_bytes=min(settings.max_pdf_bytes, snapshot.remaining),
+                )
+                increment_storage_used(space.user_id, written)
+            except QuotaExceeded as exc:
+                space.objects.delete(key)
+                return _quota_response(exc)
+            except ObjectSizeLimitExceeded:
+                space.objects.delete(key)
+                return _file_too_large_response()
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -301,7 +357,10 @@ async def _run_ingest(
     except Exception as exc:
         # Failure hygiene (plan §9): don't leak the object if ingest blows
         # up after the bytes already landed.
+        stat = space.objects.stat(key)
         space.objects.delete(key)
+        if stat is not None:
+            decrement_storage_used(space.user_id, stat.size_bytes)
         queue.put_nowait({"type": "error", "message": str(exc)})
 
 

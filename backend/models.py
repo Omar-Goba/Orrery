@@ -66,6 +66,38 @@ class UploadResponse(BaseModel):
     job_id: str
 
 
+class QuotaExceededResponse(BaseModel):
+    error: Literal["quota_exceeded"]
+    used: int
+    quota: int
+
+
+class FileTooLargeResponse(BaseModel):
+    error: Literal["file_too_large"]
+    max_bytes: int
+
+
+class VoyagerStorageSummary(BaseModel):
+    handle: str
+    display_name: str
+    created_at: datetime
+    paper_count: int
+    storage_used_bytes: int
+    storage_quota_bytes: int
+    disabled: bool
+
+
+class StoredFileEntry(BaseModel):
+    paper_id: str
+    filename: str
+    size_bytes: int
+    uploaded_at: datetime
+
+
+class QuotaPatchRequest(BaseModel):
+    storage_quota_bytes: int = Field(ge=0)
+
+
 class ProgressEvent(BaseModel):
     type: Literal["progress", "done", "error"]
     step: str | None = None

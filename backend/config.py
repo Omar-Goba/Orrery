@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # disabled. The route is still IP rate-limited separately from auth flows.
     tour_chat_enabled: bool = Field(default=True, validation_alias="ORRERY_TOUR_CHAT")
 
+    # ── Keeper storage lens (Tier 2, phase 6) ───────────────────────────────
+    # Metadata-only by default. Opening Voyager PDFs requires an explicit flag.
+    keeper_can_open_files: bool = Field(
+        default=False, validation_alias="ORRERY_KEEPER_CAN_OPEN_FILES"
+    )
+
     @property
     def objects_dir(self) -> Path:
         """Root of the ObjectStore. The only PDF-bytes root in the app —

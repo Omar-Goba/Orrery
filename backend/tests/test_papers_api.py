@@ -132,6 +132,30 @@ def _user_id(handle: str) -> str:
         return user.id
 
 
+def _storage_used(handle: str) -> int:
+    from sqlmodel import Session, select
+
+    from backend.auth.db import get_engine
+    from backend.auth.models import User
+
+    with Session(get_engine()) as db:
+        user = db.exec(select(User).where(User.handle == handle)).one()
+        return user.storage_used_bytes
+
+
+def _set_quota(handle: str, quota: int) -> None:
+    from sqlmodel import Session, select
+
+    from backend.auth.db import get_engine
+    from backend.auth.models import User
+
+    with Session(get_engine()) as db:
+        user = db.exec(select(User).where(User.handle == handle)).one()
+        user.storage_quota_bytes = quota
+        db.add(user)
+        db.commit()
+
+
 def _upload(client: TestClient, data: bytes, filename: str, status: str = "toread"):
     return client.post(
         "/api/papers/upload",
@@ -233,11 +257,13 @@ def test_upload_then_download_round_trip(app_client: TestClient) -> None:
 
 def test_user_can_list_status_and_delete_own_paper(app_client: TestClient) -> None:
     data = _pdf_bytes(b"own-delete")
+    assert _storage_used("alice") == 0
     paper = _ingest(app_client, data, "own.pdf", status="toread")
     space = app_client.app.state.space_registry.get(_user_id("alice"))
     key = f"papers/{paper['id']}.pdf"
 
     assert space.objects.stat(key) is not None
+    assert _storage_used("alice") == len(data)
     assert space.vstore.paper_exists(paper["id"])
 
     listed = app_client.get("/api/papers")
@@ -257,6 +283,7 @@ def test_user_can_list_status_and_delete_own_paper(app_client: TestClient) -> No
     assert app_client.get("/api/papers").json() == []
     assert app_client.get(f"/api/papers/{paper['id']}/file").status_code == 404
     assert space.objects.stat(key) is None
+    assert _storage_used("alice") == 0
     assert not space.vstore.paper_exists(paper["id"])
 
 
@@ -426,6 +453,7 @@ def test_ingest_failure_deletes_the_object(
 
     events = _drain_progress(app_client, job_id)
     assert events[-1]["type"] == "error"
+    assert _storage_used("alice") == 0
 
     # The object must not have been left behind.
     import hashlib
@@ -434,3 +462,69 @@ def test_ingest_failure_deletes_the_object(
     key = f"papers/{paper_id}.pdf"
     leaked = [stat.key for stat in main_module._object_store.list("users/")]
     assert all(not stat_key.endswith(f"/{key}") for stat_key in leaked)
+
+
+def test_upload_quota_early_reject_leaves_no_object_or_usage(
+    app_client: TestClient,
+) -> None:
+    data = _pdf_bytes(b"quota-early")
+    _set_quota("alice", len(data) // 2)
+
+    resp = app_client.post(
+        "/api/papers/upload",
+        files={
+            "file": (
+                "too-large-for-quota.pdf",
+                io.BytesIO(data),
+                "application/pdf",
+                {"content-length": str(len(data))},
+            )
+        },
+        data={"status": "toread"},
+    )
+
+    assert resp.status_code == 507
+    assert resp.json() == {"error": "quota_exceeded", "used": 0, "quota": len(data) // 2}
+    assert _storage_used("alice") == 0
+    assert app_client.app.state.space_registry.get(_user_id("alice")).objects.list("papers/") == []
+
+
+def test_upload_streaming_quota_reject_leaves_no_object_or_usage(
+    app_client: TestClient,
+) -> None:
+    data = _pdf_bytes(b"quota-stream")
+    _set_quota("alice", len(data) - 1)
+
+    resp = app_client.post(
+        "/api/papers/upload",
+        files={"file": ("stream-quota.pdf", io.BytesIO(data), "application/pdf")},
+        data={"status": "toread"},
+        headers={"content-length": "0"},
+    )
+
+    assert resp.status_code == 507
+    assert resp.json() == {"error": "quota_exceeded", "used": 0, "quota": len(data) - 1}
+    assert _storage_used("alice") == 0
+    assert app_client.app.state.space_registry.get(_user_id("alice")).objects.list("papers/") == []
+
+
+def test_upload_file_cap_reject_leaves_no_object_or_usage(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.config import settings
+
+    data = _pdf_bytes(b"file-cap")
+    monkeypatch.setattr(settings, "max_pdf_bytes", len(data) - 1)
+
+    resp = app_client.post(
+        "/api/papers/upload",
+        files={"file": ("too-large.pdf", io.BytesIO(data), "application/pdf")},
+        data={"status": "toread"},
+        headers={"content-length": "0"},
+    )
+
+    assert resp.status_code == 413
+    assert resp.json() == {"error": "file_too_large", "max_bytes": len(data) - 1}
+    assert _storage_used("alice") == 0
+    assert app_client.app.state.space_registry.get(_user_id("alice")).objects.list("papers/") == []

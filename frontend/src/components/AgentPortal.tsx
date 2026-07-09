@@ -7,7 +7,7 @@ import clsx from "clsx";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ApiMode, Citation, PaperRecord, SSEEvent } from "../api/client";
-import { getPaperUrl, streamChat, uploadPaper } from "../api/client";
+import { formatBytes, getMe, getPaperUrl, streamChat, uploadPaper } from "../api/client";
 
 // ── Message types ───────────────────────────────────────────────────────────
 type AgentRole = "oracle" | "librarian";
@@ -75,6 +75,7 @@ export function AgentPortal({
   const [uploadStatus, setUpStat] = useState<"read" | "toread">("toread");
   const [open, setOpen]           = useState(false);
   const [dragging, setDragging]   = useState(false);
+  const [usage, setUsage]         = useState<{ used: number; quota: number } | null>(null);
   const bottomRef  = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
   const inputRef   = useRef<HTMLInputElement>(null);
@@ -134,11 +135,21 @@ export function AgentPortal({
     if (open) bottomRef.current?.scrollIntoView();
   }, [open]);
 
+  useEffect(() => {
+    if (disableUpload || apiMode !== "normal") return;
+    let cancelled = false;
+    getMe()
+      .then(me => {
+        if (!cancelled) setUsage({ used: me.storage_used_bytes, quota: me.storage_quota_bytes });
+      })
+      .catch(() => { if (!cancelled) setUsage(null); });
+    return () => { cancelled = true; };
+  }, [apiMode, disableUpload]);
+
   // "Ask Oracle" from a StarCard drops a prefilled question into the omnibar
   // and focuses it — bump `prefill.token` to re-trigger for the same text.
   useEffect(() => {
     if (!prefill) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing to an external token, not derivable during render
     setInput(prefill.text);
     if (isFloat) setOpen(true);
     inputRef.current?.focus();
@@ -259,16 +270,19 @@ export function AgentPortal({
           }));
           onUploadArrive?.(p.cluster_path ?? "");
           onUploadDone?.();
+          getMe()
+            .then(me => setUsage({ used: me.storage_used_bytes, quota: me.storage_quota_bytes }))
+            .catch(() => setUsage(null));
         }
         scrollDown();
       });
-    } catch {
+    } catch (err) {
       onUploadCancel?.();
       patchById(pId, m => ({
         ...m,
         streaming: false,
         progress: undefined,
-        content: "Upload failed — check the backend logs.",
+        content: err instanceof Error ? err.message : "Upload failed — check the backend logs.",
       }));
     }
     setBusy(false);
@@ -388,6 +402,17 @@ export function AgentPortal({
             <Paperclip size={15} />
             {!isFloat && <span className="hidden xl:inline text-[11px] font-semibold">Upload PDF</span>}
           </button>
+        )}
+        {!disableUpload && usage && (
+          <div className="hidden sm:block w-24 shrink-0 space-y-1">
+            <div className="h-1 overflow-hidden rounded-full bg-rim">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-cyan-600 to-cyan-400"
+                style={{ width: `${usage.quota > 0 ? Math.min(100, (usage.used / usage.quota) * 100) : 0}%` }}
+              />
+            </div>
+            <p className="truncate text-[9px] text-muted">{formatBytes(usage.used)} used</p>
+          </div>
         )}
         <input
           ref={inputRef}

@@ -8,6 +8,8 @@ export interface Session {
   displayName: string;
   role: "keeper" | "voyager";
   isOwner: boolean;
+  storageUsedBytes: number;
+  storageQuotaBytes: number;
   createdAt: string;
 }
 
@@ -19,6 +21,8 @@ function sessionFromUser(user: AuthUser): Session {
     displayName: user.display_name,
     role: user.role,
     isOwner: user.role === "keeper",
+    storageUsedBytes: user.storage_used_bytes,
+    storageQuotaBytes: user.storage_quota_bytes,
     createdAt: user.created_at,
   };
   localStorage.setItem(KEY, JSON.stringify(session));

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getTourGalaxy, listPapers, loginAuth, streamChat } from "./client";
+import { formatBytes, getTourGalaxy, listKeeperVoyagerFiles, listKeeperVoyagers, listPapers, loginAuth, streamChat, uploadPaper } from "./client";
 
 describe("api/client", () => {
   beforeEach(() => {
@@ -80,5 +80,47 @@ describe("api/client", () => {
     await vi.waitFor(() => expect(onEvent).toHaveBeenCalled());
 
     expect(onEvent).toHaveBeenCalledWith({ type: "error", message: "Chat failed with status 401" });
+  });
+
+  it("fetches keeper storage lens endpoints with cookies", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listKeeperVoyagers();
+    await listKeeperVoyagerFiles("vega-7");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:8000/api/keeper/voyagers",
+      { credentials: "include" },
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:8000/api/keeper/voyagers/vega-7/files",
+      { credentials: "include" },
+    );
+  });
+
+  it("turns quota upload errors into usable messages", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "quota_exceeded", used: 1024, quota: 2048 }), {
+          status: 507,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(uploadPaper(new File(["x"], "x.pdf", { type: "application/pdf" }), "toread", vi.fn()))
+      .rejects.toThrow("Storage quota exceeded (1.0 KB of 2.0 KB used).");
+  });
+
+  it("formats byte values for storage UI", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(1024)).toBe("1.0 KB");
+    expect(formatBytes(10 * 1024 * 1024)).toBe("10 MB");
   });
 });

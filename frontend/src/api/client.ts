@@ -42,6 +42,23 @@ export interface AuthUser {
   created_at: string;
 }
 
+export interface VoyagerStorageSummary {
+  handle: string;
+  display_name: string;
+  created_at: string;
+  paper_count: number;
+  storage_used_bytes: number;
+  storage_quota_bytes: number;
+  disabled: boolean;
+}
+
+export interface StoredFileEntry {
+  paper_id: string;
+  filename: string;
+  size_bytes: number;
+  uploaded_at: string;
+}
+
 export interface Citation {
   paper_id: string;
   author: string;
@@ -175,6 +192,31 @@ export async function getMe(): Promise<AuthUser> {
   return jsonOrThrow<AuthUser>(resp);
 }
 
+export async function listKeeperVoyagers(): Promise<VoyagerStorageSummary[]> {
+  const resp = await fetch(`${BASE}/api/keeper/voyagers`, { credentials: withCookies });
+  return jsonOrThrow<VoyagerStorageSummary[]>(resp);
+}
+
+export async function listKeeperVoyagerFiles(handle: string): Promise<StoredFileEntry[]> {
+  const resp = await fetch(`${BASE}/api/keeper/voyagers/${encodeURIComponent(handle)}/files`, {
+    credentials: withCookies,
+  });
+  return jsonOrThrow<StoredFileEntry[]>(resp);
+}
+
+export async function updateKeeperVoyagerQuota(
+  handle: string,
+  storageQuotaBytes: number,
+): Promise<VoyagerStorageSummary> {
+  const resp = await fetch(`${BASE}/api/keeper/voyagers/${encodeURIComponent(handle)}/quota`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: withCookies,
+    body: JSON.stringify({ storage_quota_bytes: storageQuotaBytes }),
+  });
+  return jsonOrThrow<VoyagerStorageSummary>(resp);
+}
+
 export async function logoutAuth(): Promise<void> {
   await fetch(`${BASE}/api/auth/logout`, {
     method: "POST",
@@ -261,6 +303,15 @@ export async function uploadPaper(
     );
   }
   if (!uploadResp.ok) {
+    if (uploadResp.status === 507 || uploadResp.status === 413) {
+      const body = await uploadResp.json().catch(() => null);
+      if (body?.error === "quota_exceeded") {
+        throw new Error(`Storage quota exceeded (${formatBytes(body.used)} of ${formatBytes(body.quota)} used).`);
+      }
+      if (body?.error === "file_too_large") {
+        throw new Error(`PDF exceeds the ${formatBytes(body.max_bytes)} per-file limit.`);
+      }
+    }
     throw new Error(`Upload failed with status ${uploadResp.status}`);
   }
   const { job_id } = await uploadResp.json();
@@ -284,6 +335,18 @@ export async function uploadPaper(
       reject(new Error("SSE connection error"));
     };
   });
+}
+
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
 async function readSSEStream(

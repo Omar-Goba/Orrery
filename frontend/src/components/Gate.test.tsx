@@ -30,6 +30,8 @@ describe("Gate", () => {
       displayName: "Nova",
       role: "voyager",
       isOwner: false,
+      storageUsedBytes: 0,
+      storageQuotaBytes: 1,
       createdAt: "2026-01-01T00:00:00Z",
     });
     const onEnter = vi.fn();
@@ -49,6 +51,8 @@ describe("Gate", () => {
       displayName: "Nova",
       role: "voyager",
       isOwner: false,
+      storageUsedBytes: 0,
+      storageQuotaBytes: 1,
       createdAt: "2026-01-01T00:00:00Z",
     });
     const onEnter = vi.fn();

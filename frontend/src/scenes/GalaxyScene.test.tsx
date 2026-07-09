@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GalaxyScene } from "./GalaxyScene";
 import type { PaperRecord } from "../api/client";
 import * as api from "../api/client";
+import type { Session } from "../auth/session";
 
 vi.mock("../components/PaperGraph", () => ({
   PaperGraph: () => <div data-testid="paper-graph" />,
@@ -18,6 +19,8 @@ vi.mock("../api/client", async () => {
     listPapers: vi.fn(),
     getTree: vi.fn(),
     getSimilarityGraph: vi.fn().mockResolvedValue({}),
+    listKeeperVoyagers: vi.fn().mockResolvedValue([]),
+    listKeeperVoyagerFiles: vi.fn().mockResolvedValue([]),
     setPaperStatus: vi.fn(),
     streamReindex: vi.fn(),
     getPaperUrl: vi.fn((id: string, mode?: string) => `/paper/${mode ?? "normal"}/${id}`),
@@ -47,6 +50,26 @@ const fixturePapers = [
   makePaper({ id: "c", cluster_path: "Transformers/Leaf" }),
 ];
 
+const keeperSession: Session = {
+  username: "omar",
+  displayName: "Omar",
+  role: "keeper",
+  isOwner: true,
+  storageUsedBytes: 0,
+  storageQuotaBytes: 1024,
+  createdAt: "2026-01-01T00:00:00Z",
+};
+
+const voyagerSession: Session = {
+  username: "nova",
+  displayName: "Nova",
+  role: "voyager",
+  isOwner: false,
+  storageUsedBytes: 0,
+  storageQuotaBytes: 1024,
+  createdAt: "2026-01-01T00:00:00Z",
+};
+
 describe("GalaxyScene gating", () => {
   beforeEach(() => {
     vi.mocked(api.listPapers).mockResolvedValue(fixturePapers);
@@ -57,7 +80,7 @@ describe("GalaxyScene gating", () => {
 
   it("observer mode hides upload and reindex controls, shows tour + search", async () => {
     render(
-      <GalaxyScene galaxy="omar" mode="observer" onExitToUniverse={() => {}} />
+      <GalaxyScene galaxy="omar" mode="observer" session={null} onExitToUniverse={() => {}} />
     );
 
     expect((await screen.findAllByTestId("paper-graph")).length).toBeGreaterThan(0);
@@ -71,12 +94,37 @@ describe("GalaxyScene gating", () => {
 
   it("owner mode shows upload and reindex controls", async () => {
     render(
-      <GalaxyScene galaxy="omar" mode="owner" onExitToUniverse={() => {}} />
+      <GalaxyScene galaxy="omar" mode="owner" session={null} onExitToUniverse={() => {}} />
     );
 
     await screen.findAllByTestId("paper-graph");
     expect((await screen.findAllByLabelText("Upload a PDF")).length).toBeGreaterThan(0);
     expect(screen.getAllByLabelText("Reindex library").length).toBeGreaterThan(0);
+    expect(api.listPapers).toHaveBeenCalledWith("normal");
+    expect(api.getTree).toHaveBeenCalledWith("normal");
+  });
+
+  it("shows the Storage Ledger only for keeper owner sessions", async () => {
+    const { rerender } = render(
+      <GalaxyScene galaxy="omar" mode="owner" session={keeperSession} onExitToUniverse={() => {}} />
+    );
+
+    expect(await screen.findAllByText("Storage Ledger")).toHaveLength(2);
+    expect(api.listKeeperVoyagers).toHaveBeenCalled();
+
+    rerender(
+      <GalaxyScene galaxy="nova" mode="owner" session={voyagerSession} onExitToUniverse={() => {}} />
+    );
+
+    expect(screen.queryByText("Storage Ledger")).not.toBeInTheDocument();
+  });
+
+  it("voyager owner mode loads their own normal API galaxy", async () => {
+    render(
+      <GalaxyScene galaxy="nova" mode="owner" session={voyagerSession} onExitToUniverse={() => {}} />
+    );
+
+    await screen.findAllByTestId("paper-graph");
     expect(api.listPapers).toHaveBeenCalledWith("normal");
     expect(api.getTree).toHaveBeenCalledWith("normal");
   });
@@ -91,7 +139,7 @@ describe("GalaxyScene empty galaxy", () => {
   it("skips the fetch and shows the dark-galaxy empty state for a non-owner galaxy", async () => {
     const onExitToUniverse = vi.fn();
     render(
-      <GalaxyScene galaxy="nova" mode="observer" onExitToUniverse={onExitToUniverse} />
+      <GalaxyScene galaxy="nova" mode="observer" session={null} onExitToUniverse={onExitToUniverse} />
     );
 
     expect(await screen.findByText(/your galaxy is dark/i)).toBeInTheDocument();
