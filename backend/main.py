@@ -79,13 +79,19 @@ async def get_paper_file(paper_id: str):
     record = paper_store.get(paper_id)
     if not record:
         raise HTTPException(404, "Paper not found")
-    path = Path(record.original_path)
-    if not path.exists():
+    input_dir = settings.input_dir.resolve()
+    path = Path(record.original_path).resolve()
+    try:
+        path.relative_to(input_dir)
+    except ValueError:
+        raise HTTPException(404, "File not found on disk") from None
+    if not path.is_file():
         raise HTTPException(404, "File not found on disk")
     return FileResponse(
         str(path),
         media_type="application/pdf",
         filename=record.filename,
+        content_disposition_type="inline",
     )
 
 

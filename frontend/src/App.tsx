@@ -4,8 +4,9 @@ import clsx from "clsx";
 import { TreeView } from "./components/TreeView";
 import { PaperGraph } from "./components/PaperGraph";
 import { AgentPortal } from "./components/AgentPortal";
+import { PdfReader } from "./components/PdfReader";
 import type { PaperRecord, TreeNode } from "./api/client";
-import { getTree, listPapers, setPaperStatus, streamReindex } from "./api/client";
+import { getPaperUrl, getTree, listPapers, setPaperStatus, streamReindex } from "./api/client";
 
 type MobileView = "tree" | "graph" | "chat";
 
@@ -17,6 +18,7 @@ export default function App() {
   const [tree, setTree]              = useState<TreeNode | null>(null);
   const [papers, setPapers]          = useState<PaperRecord[]>([]);
   const [hovered, setHovered]        = useState<PaperRecord | null>(null);
+  const [activePaper, setActivePaper] = useState<PaperRecord | null>(null);
   const [refreshing, setRefresh]     = useState(false);
   const [mobileView, setMobile]      = useState<MobileView>("chat");
   const [reindexing, setReindexing]  = useState(false);
@@ -29,10 +31,14 @@ export default function App() {
       const [t, p] = await Promise.all([getTree(), listPapers()]);
       setTree(t);
       setPapers(p);
-    } catch {}
+    } catch {
+      setTree(null);
+    }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    queueMicrotask(() => { void load(); });
+  }, []);
 
   const refresh = async () => {
     setRefresh(true);
@@ -59,9 +65,20 @@ export default function App() {
   }, [reindexing]);
 
   const toggleStatus = useCallback(async (paper: PaperRecord, newStatus: "read" | "toread") => {
-    await setPaperStatus(paper.id, newStatus);
+    const updated = await setPaperStatus(paper.id, newStatus);
+    setActivePaper(current => current?.id === updated.id ? updated : current);
     await load();
   }, []);
+
+  const openPaper = useCallback((paper: PaperRecord) => {
+    setActivePaper(paper);
+  }, []);
+
+  const openPaperById = useCallback((paperId: string) => {
+    const paper = papers.find(p => p.id === paperId);
+    if (paper) setActivePaper(paper);
+    else window.open(getPaperUrl(paperId), "_blank");
+  }, [papers]);
 
   const readCount   = papers.filter(p => p.status === "read").length;
   const toreadCount = papers.filter(p => p.status === "toread").length;
@@ -81,20 +98,32 @@ export default function App() {
             reindexing={reindexing} onReindex={startReindex}
             reindexStep={reindexStep} reindexPct={reindexPct}
           />
-          <SidebarBody tree={tree} readCount={readCount} toreadCount={toreadCount} />
+          <SidebarBody tree={tree} readCount={readCount} toreadCount={toreadCount} onOpenPaperId={openPaperById} />
         </aside>
 
         {/* Center graph */}
         <main className="flex-1 relative overflow-hidden bg-bg min-w-0">
-          <PaperGraph papers={papers} onHover={setHovered} />
-          <ClusterLegend papers={papers} />
-          {hovered && <HoverBar paper={hovered} onToggle={toggleStatus} />}
-          {papers.length === 0 && !refreshing && <GraphEmptyState />}
+          {activePaper ? (
+            <PdfReader
+              key={activePaper.id}
+              paper={activePaper}
+              mode="desktop"
+              onClose={() => setActivePaper(null)}
+              onToggleStatus={toggleStatus}
+            />
+          ) : (
+            <>
+              <PaperGraph papers={papers} onHover={setHovered} onOpenPaper={openPaper} />
+              <ClusterLegend papers={papers} />
+              {hovered && <HoverBar paper={hovered} onToggle={toggleStatus} onOpenPaper={openPaper} />}
+              {papers.length === 0 && !refreshing && <GraphEmptyState />}
+            </>
+          )}
         </main>
 
         {/* Right agent portal */}
         <aside className="w-80 xl:w-96 shrink-0 border-l border-rim flex flex-col bg-surface overflow-hidden">
-          <AgentPortal onUploadDone={refresh} />
+          <AgentPortal onUploadDone={refresh} onOpenPaper={openPaper} onOpenPaperId={openPaperById} />
         </aside>
       </div>
 
@@ -120,7 +149,7 @@ export default function App() {
               mobileView === "tree" ? "opacity-100 z-10" : "opacity-0 z-0 pointer-events-none"
             )}
           >
-            <SidebarBody tree={tree} readCount={readCount} toreadCount={toreadCount} />
+          <SidebarBody tree={tree} readCount={readCount} toreadCount={toreadCount} onOpenPaperId={openPaperById} />
           </div>
 
           {/* Graph panel */}
@@ -130,9 +159,9 @@ export default function App() {
               mobileView === "graph" ? "opacity-100 z-10" : "opacity-0 z-0 pointer-events-none"
             )}
           >
-            <PaperGraph papers={papers} onHover={setHovered} active={mobileView === "graph"} />
+            <PaperGraph papers={papers} onHover={setHovered} onOpenPaper={openPaper} active={mobileView === "graph"} />
             <ClusterLegend papers={papers} />
-            {hovered && mobileView === "graph" && <HoverBar paper={hovered} />}
+            {hovered && mobileView === "graph" && <HoverBar paper={hovered} onOpenPaper={openPaper} />}
           </div>
 
           {/* Chat panel */}
@@ -142,9 +171,19 @@ export default function App() {
               mobileView === "chat" ? "opacity-100 z-10" : "opacity-0 z-0 pointer-events-none"
             )}
           >
-            <AgentPortal onUploadDone={refresh} hideHeader />
+            <AgentPortal onUploadDone={refresh} onOpenPaper={openPaper} onOpenPaperId={openPaperById} hideHeader />
           </div>
         </div>
+
+        {activePaper && (
+          <PdfReader
+            key={activePaper.id}
+            paper={activePaper}
+            mode="mobile"
+            onClose={() => setActivePaper(null)}
+            onToggleStatus={toggleStatus}
+          />
+        )}
 
         {/* Bottom navigation */}
         <nav className="shrink-0 flex border-t border-rim bg-surface pb-safe">
@@ -246,10 +285,12 @@ function SidebarBody({
   tree,
   readCount,
   toreadCount,
+  onOpenPaperId,
 }: {
   tree: TreeNode | null;
   readCount: number;
   toreadCount: number;
+  onOpenPaperId?: (paperId: string) => void;
 }) {
   return (
     <>
@@ -260,7 +301,7 @@ function SidebarBody({
       </div>
       <div className="flex-1 overflow-y-auto pb-2 min-h-0">
         {tree ? (
-          <TreeView node={tree} depth={0} />
+          <TreeView node={tree} depth={0} onOpenPaperId={onOpenPaperId} />
         ) : (
           <div className="px-4 py-6 text-center text-[11px] text-muted">Loading…</div>
         )}
@@ -295,9 +336,11 @@ function GraphEmptyState() {
 function HoverBar({
   paper: p,
   onToggle,
+  onOpenPaper,
 }: {
   paper: PaperRecord;
   onToggle?: (paper: PaperRecord, newStatus: "read" | "toread") => void;
+  onOpenPaper?: (paper: PaperRecord) => void;
 }) {
   const isRead     = p.status === "read";
   const nextStatus = (isRead ? "toread" : "read") as "read" | "toread";
@@ -310,6 +353,12 @@ function HoverBar({
       <span className="hidden sm:inline text-[11px] text-muted shrink-0">
         {[p.author, p.year].filter(Boolean).join(" · ")}
       </span>
+      <button
+        onClick={() => onOpenPaper?.(p)}
+        className="shrink-0 text-[10px] px-2 py-0.5 rounded-md bg-cyan-500/12 text-cyan-400 font-semibold hover:bg-cyan-500/20 transition-colors"
+      >
+        open
+      </button>
       <button
         onClick={() => onToggle?.(p, nextStatus)}
         title={isRead ? "Mark as to-read" : "Mark as read"}

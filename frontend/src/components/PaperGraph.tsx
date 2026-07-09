@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PaperRecord } from "../api/client";
-import { getPaperUrl } from "../api/client";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 interface GNode {
@@ -64,9 +63,11 @@ function sharedPathDepth(a: string | null, b: string | null): number {
 export function PaperGraph({
   papers,
   onHover,
+  onOpenPaper,
 }: {
   papers: PaperRecord[];
   onHover?: (p: PaperRecord | null) => void;
+  onOpenPaper?: (p: PaperRecord) => void;
   active?: boolean;
 }) {
   const canvasRef  = useRef<HTMLCanvasElement>(null);
@@ -469,8 +470,8 @@ export function PaperGraph({
 
   const onClick = useCallback(() => {
     const p = hovRef.current?.paper;
-    if (p?.id) window.open(getPaperUrl(p.id), "_blank");
-  }, []);
+    if (p) onOpenPaper?.(p);
+  }, [onOpenPaper]);
 
   return (
     <canvas

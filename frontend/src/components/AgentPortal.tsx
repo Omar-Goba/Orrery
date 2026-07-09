@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Bot, Search, Send, Paperclip, X, FileText, Sparkles,
 } from "lucide-react";
@@ -25,9 +25,13 @@ const uid = () => String(++_seq);
 // ── Component ───────────────────────────────────────────────────────────────
 export function AgentPortal({
   onUploadDone,
+  onOpenPaper,
+  onOpenPaperId,
   hideHeader = false,
 }: {
   onUploadDone?: () => void;
+  onOpenPaper?: (paper: PaperRecord) => void;
+  onOpenPaperId?: (paperId: string) => void;
   hideHeader?: boolean;
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([
@@ -57,7 +61,7 @@ export function AgentPortal({
     setMsgs(prev => prev.map(m => (m.id === id ? updater(m) : m)));
 
   // ── Chat ──────────────────────────────────────────────────────────────────
-  const send = useCallback(() => {
+  const send = () => {
     const text = input.trim();
     if (!text || busy) return;
     setInput("");
@@ -116,10 +120,10 @@ export function AgentPortal({
       }
       scrollDown();
     }, history);
-  }, [input, busy, msgs, onUploadDone]);
+  };
 
   // ── Upload ────────────────────────────────────────────────────────────────
-  const doUpload = useCallback(async () => {
+  const doUpload = async () => {
     if (!pendingFile) return;
     const file   = pendingFile;
     const status = uploadStatus;
@@ -148,6 +152,7 @@ export function AgentPortal({
             ...m,
             streaming: false,
             progress: undefined,
+            papers: [p],
             content: `Indexed **${p.title ?? p.filename}** into _${
               (p.cluster_path ?? "library").replace("/", " › ")
             }_.`,
@@ -165,7 +170,7 @@ export function AgentPortal({
       }));
     }
     setBusy(false);
-  }, [pendingFile, uploadStatus, onUploadDone]);
+  };
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -182,7 +187,12 @@ export function AgentPortal({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {msgs.map(m => (
-          <MsgBubble key={m.id} msg={m} />
+          <MsgBubble
+            key={m.id}
+            msg={m}
+            onOpenPaper={onOpenPaper}
+            onOpenPaperId={onOpenPaperId}
+          />
         ))}
         <div ref={bottomRef} />
       </div>
@@ -288,7 +298,15 @@ export function AgentPortal({
 }
 
 // ── Message bubble ───────────────────────────────────────────────────────────
-function MsgBubble({ msg }: { msg: Msg }) {
+function MsgBubble({
+  msg,
+  onOpenPaper,
+  onOpenPaperId,
+}: {
+  msg: Msg;
+  onOpenPaper?: (paper: PaperRecord) => void;
+  onOpenPaperId?: (paperId: string) => void;
+}) {
   if (msg.role === "system") {
     return (
       <div className="py-1 text-center">
@@ -379,7 +397,7 @@ function MsgBubble({ msg }: { msg: Msg }) {
         {msg.papers && msg.papers.length > 0 && (
           <div className="space-y-1.5">
             {msg.papers.map(p => (
-              <PaperCard key={p.id} paper={p} />
+              <PaperCard key={p.id} paper={p} onOpenPaper={onOpenPaper} />
             ))}
           </div>
         )}
@@ -388,7 +406,7 @@ function MsgBubble({ msg }: { msg: Msg }) {
         {msg.citations && msg.citations.length > 0 && (
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             {msg.citations.map(c => (
-              <CitationChip key={c.paper_id} c={c} />
+              <CitationChip key={c.paper_id} c={c} onOpenPaperId={onOpenPaperId} />
             ))}
           </div>
         )}
@@ -398,19 +416,20 @@ function MsgBubble({ msg }: { msg: Msg }) {
 }
 
 // ── Paper card ───────────────────────────────────────────────────────────────
-function PaperCard({ paper: p }: { paper: PaperRecord }) {
+function PaperCard({
+  paper: p,
+  onOpenPaper,
+}: {
+  paper: PaperRecord;
+  onOpenPaper?: (paper: PaperRecord) => void;
+}) {
   const parts = p.cluster_path?.split("/") ?? [];
-  return (
-    <a
-      href={getPaperUrl(p.id)}
-      target="_blank"
-      rel="noreferrer"
-      className="flex items-start gap-2.5 bg-card border border-rim rounded-xl p-3 hover:border-cyan-500/30 transition-colors group"
-    >
+  const content = (
+    <>
       <div className="shrink-0 w-7 h-7 rounded-lg bg-cyan-500/10 flex items-center justify-center">
         <FileText size={13} className="text-cyan-400" />
       </div>
-      <div className="flex-1 min-w-0 space-y-0.5">
+      <div className="flex-1 min-w-0 space-y-0.5 text-left">
         <p className="text-[12px] font-medium text-zinc-200 leading-snug line-clamp-2">
           {p.title ?? p.filename.replace(/\.pdf$/i, "")}
         </p>
@@ -435,21 +454,52 @@ function PaperCard({ paper: p }: { paper: PaperRecord }) {
       >
         {p.status === "read" ? "read" : "to-read"}
       </span>
+    </>
+  );
+
+  const className = "flex w-full items-start gap-2.5 bg-card border border-rim rounded-xl p-3 hover:border-cyan-500/30 transition-colors group";
+
+  if (onOpenPaper) {
+    return (
+      <button type="button" onClick={() => onOpenPaper(p)} className={className}>
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <a
+      href={getPaperUrl(p.id)}
+      target="_blank"
+      rel="noreferrer"
+      className={className}
+    >
+      {content}
     </a>
   );
 }
 
 // ── Citation chip ────────────────────────────────────────────────────────────
-function CitationChip({ c }: { c: Citation }) {
-  return (
-    <a
-      href={getPaperUrl(c.paper_id)}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/15 text-violet-300 hover:border-violet-400/35 hover:bg-violet-500/15 transition-colors"
-    >
+function CitationChip({ c, onOpenPaperId }: { c: Citation; onOpenPaperId?: (paperId: string) => void }) {
+  const className = "inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/15 text-violet-300 hover:border-violet-400/35 hover:bg-violet-500/15 transition-colors";
+  const content = (
+    <>
       <span className="font-medium">{c.author}</span>
       <span className="text-violet-500">{c.year}</span>
+    </>
+  );
+
+  if (onOpenPaperId) {
+    return (
+      <button type="button" onClick={() => onOpenPaperId(c.paper_id)} className={className}>
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <a href={getPaperUrl(c.paper_id)} target="_blank" rel="noreferrer" className={className}>
+      {content}
     </a>
   );
 }

@@ -2,18 +2,17 @@ import { useState } from "react";
 import { ChevronRight, ChevronDown, Folder, FolderOpen, FileText } from "lucide-react";
 import clsx from "clsx";
 import type { TreeNode } from "../api/client";
-import { getPaperUrl } from "../api/client";
 
 interface TreeViewProps {
   node: TreeNode;
   depth?: number;
+  onOpenPaperId?: (paperId: string) => void;
 }
 
-export function TreeView({ node, depth = 0 }: TreeViewProps) {
+export function TreeView({ node, depth = 0, onOpenPaperId }: TreeViewProps) {
   const [open, setOpen] = useState(depth < 2);
 
   if (node.type === "paper") {
-    const url = node.paper_id ? getPaperUrl(node.paper_id) : undefined;
     return (
       <div
         className={clsx(
@@ -21,7 +20,7 @@ export function TreeView({ node, depth = 0 }: TreeViewProps) {
           "text-muted hover:text-ink hover:bg-rim/50 transition-colors"
         )}
         style={{ paddingLeft: `${depth * 11 + 8}px` }}
-        onClick={() => url && window.open(url, "_blank")}
+        onClick={() => node.paper_id && onOpenPaperId?.(node.paper_id)}
       >
         <FileText size={12} className="shrink-0 text-wire" />
         <span className="text-[12px] truncate flex-1 leading-5">
@@ -80,7 +79,12 @@ export function TreeView({ node, depth = 0 }: TreeViewProps) {
       {open && (
         <div>
           {children.map((child, i) => (
-            <TreeView key={`${child.name}-${i}`} node={child} depth={depth + 1} />
+            <TreeView
+              key={`${child.name}-${i}`}
+              node={child}
+              depth={depth + 1}
+              onOpenPaperId={onOpenPaperId}
+            />
           ))}
         </div>
       )}

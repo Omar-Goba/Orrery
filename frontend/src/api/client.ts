@@ -147,7 +147,8 @@ export async function uploadPaper(
       onEvent(event);
       if (event.type === "done" || event.type === "error") {
         es.close();
-        event.type === "error" ? reject(new Error(event.message)) : resolve();
+        if (event.type === "error") reject(new Error(event.message));
+        else resolve();
       }
     };
     es.onerror = () => {
@@ -175,7 +176,9 @@ async function readSSEStream(
       if (!line.startsWith("data: ")) continue;
       try {
         onEvent(JSON.parse(line.slice(6)));
-      } catch {}
+      } catch {
+        continue;
+      }
     }
   }
 }
