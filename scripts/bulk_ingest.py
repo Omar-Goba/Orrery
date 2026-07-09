@@ -5,6 +5,7 @@ Usage:
     python scripts/bulk_ingest.py          # full run
     python scripts/bulk_ingest.py --dry-run  # preview only
     python scripts/bulk_ingest.py --reset    # clear Chroma + papers.json and start fresh
+    python scripts/bulk_ingest.py --revector # update paper vectors from summaries only
 """
 from __future__ import annotations
 import argparse
@@ -34,6 +35,7 @@ from backend.models import ChunkRecord, PaperRecord
 from backend.services.embeddings import EmbeddingService
 from backend.services.filesystem import FilesystemService
 from backend.services.ocr import OCRService
+from backend.services.summarize import SummaryService, front_matter_text
 from backend.services.vectorstore import VectorStore
 from backend.store import PaperStore, paper_id_for
 
@@ -125,11 +127,40 @@ def extract_metadata(text: str, filename: str) -> tuple[str | None, str | None, 
     return title, author_last, year
 
 
+async def paper_vector_for(
+    text: str,
+    filename: str,
+    title: str | None,
+    summary: str | None,
+    embed_svc: EmbeddingService,
+) -> list[float]:
+    if summary:
+        return await embed_svc.embed_text(f"{title or filename}\n\n{summary}")
+    front = front_matter_text(text) or (title or filename)
+    return embed_svc.paper_vector(await embed_svc.embed_batch(chunk_text(front)))
+
+
+async def summarize_metadata(
+    text: str,
+    filename: str,
+    summary_svc: SummaryService,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    fallback_title, fallback_author, fallback_year = extract_metadata(text, Path(filename).stem)
+    summary_result = await summary_svc.summarize(text, filename)
+    return (
+        summary_result.title or fallback_title,
+        summary_result.author_last or fallback_author,
+        summary_result.year or fallback_year,
+        summary_result.summary,
+    )
+
+
 async def process_one(
     pdf_path: Path,
     status: str,
     ocr_svc: OCRService,
     embed_svc: EmbeddingService,
+    summary_svc: SummaryService,
     vstore: VectorStore,
     store: PaperStore,
     dry_run: bool,
@@ -154,10 +185,10 @@ async def process_one(
             progress.log(f"[yellow]warn: empty OCR for {pdf_path.name}[/yellow]")
             text = pdf_path.stem.replace("_", " ")
 
-        title, author, year = extract_metadata(text, pdf_path.stem)
+        title, author, year, summary = await summarize_metadata(text, pdf_path.name, summary_svc)
         chunks = chunk_text(text)
         chunk_vecs = await embed_svc.embed_batch(chunks)
-        paper_vec = embed_svc.paper_vector(chunk_vecs)
+        paper_vec = await paper_vector_for(text, pdf_path.name, title, summary, embed_svc)
 
         chunk_records = [
             ChunkRecord(paper_id=paper_id, chunk_index=i, text=c, token_count=len(c) // 4)
@@ -168,14 +199,15 @@ async def process_one(
             paper_id, paper_vec,
             {"filename": pdf_path.name, "status": status,
              "original_path": str(pdf_path.resolve()),
-             "title": title or "", "author": author or "", "year": year or ""},
+             "title": title or "", "author": author or "", "year": year or "",
+             "summary": summary or ""},
         )
 
         record = PaperRecord(
             id=paper_id, filename=pdf_path.name,
             original_path=str(pdf_path.resolve()),
             status=status,  # type: ignore[arg-type]
-            title=title, author=author, year=year, ocr_cached=True,
+            title=title, author=author, year=year, summary=summary, ocr_cached=True,
             ingested_at=datetime.now(timezone.utc),
         )
         store.put(record)
@@ -191,7 +223,118 @@ async def process_one(
         return None
 
 
-async def main(dry_run: bool, reset: bool) -> None:
+async def revector_one(
+    record: PaperRecord,
+    ocr_svc: OCRService,
+    embed_svc: EmbeddingService,
+    summary_svc: SummaryService,
+    vstore: VectorStore,
+    store: PaperStore,
+    dry_run: bool,
+    progress: Progress,
+    task_id,
+) -> PaperRecord | None:
+    pdf_path = Path(record.original_path)
+
+    if dry_run:
+        progress.advance(task_id)
+        progress.log(f"[cyan]would revector:[/cyan] {record.filename}")
+        return record
+
+    try:
+        text = await ocr_svc.extract(pdf_path)
+        if not text.strip():
+            progress.log(f"[yellow]warn: empty OCR for {record.filename}[/yellow]")
+            text = pdf_path.stem.replace("_", " ")
+
+        title, author, year, summary = await summarize_metadata(text, record.filename, summary_svc)
+        paper_vec = await paper_vector_for(text, record.filename, title, summary, embed_svc)
+        vstore.upsert_paper_vector(
+            record.id,
+            paper_vec,
+            {"filename": record.filename, "status": record.status,
+             "original_path": record.original_path,
+             "title": title or "", "author": author or "", "year": year or "",
+             "summary": summary or ""},
+        )
+
+        record.title = title
+        record.author = author
+        record.year = year
+        record.summary = summary
+        record.ocr_cached = True
+        store.put(record)
+        progress.advance(task_id)
+        return record
+
+    except Exception as exc:
+        progress.log(f"[red]ERROR {record.filename}:[/red] {exc}")
+        err_file = ROOT / "bulk_ingest_errors.jsonl"
+        with open(err_file, "a") as f:
+            f.write(json.dumps({"file": record.original_path, "error": str(exc)}) + "\n")
+        progress.advance(task_id)
+        return None
+
+
+async def finalize_library(
+    vstore: VectorStore,
+    store: PaperStore,
+    clusterer: HierarchicalClusterer,
+    namer: ClusterNamer,
+    fs_svc: FilesystemService,
+) -> None:
+    console.print("\nClustering papers…")
+    paper_ids, vectors = vstore.get_all_paper_vectors()
+    if not paper_ids:
+        console.print("[yellow]No papers in vector store — skipping clustering.[/yellow]")
+        return
+
+    tree = clusterer.cluster(paper_ids, vectors)
+    console.print(f"Found [bold]{len(tree)}[/bold] top-level clusters")
+
+    console.print("Naming cluster tree…")
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p2:
+        name_task = p2.add_task("Naming…", total=None)
+        await namer.name_tree(tree, store.as_dict())
+        p2.advance(name_task)
+
+    def assign_paths(nodes: list, prefix: str = "") -> None:
+        for node in nodes:
+            path = f"{prefix}/{node.name}" if prefix else node.name
+            if node.is_leaf:
+                for pid in node.paper_ids:
+                    r = store.get(pid)
+                    if r:
+                        r.cluster_path = path
+                        r.symlink_name = fs_svc.make_symlink_name(r)
+            else:
+                assign_paths(node.children, path)
+
+    assign_paths(tree)
+
+    console.print("Rebuilding output tree…")
+    fs_svc.rebuild_tree(tree, store.as_dict())
+    store.save()
+
+    console.print(f"\n[bold green]Done![/bold green] {len(store)} papers in library.")
+    console.print(f"Output tree: {settings.output_dir}")
+
+    def print_tree(nodes: list, indent: int = 0) -> None:
+        prefix = "  " * indent
+        for node in nodes:
+            if node.is_leaf:
+                console.print(f"{prefix}[dim]({len(node.paper_ids)} papers)[/dim]")
+            else:
+                console.print(f"{prefix}[bold]{node.name}[/bold]/")
+                print_tree(node.children, indent + 1)
+
+    print_tree(tree)
+
+
+async def main(dry_run: bool, reset: bool, revector: bool) -> None:
+    if reset and revector:
+        raise SystemExit("--reset and --revector cannot be used together")
+
     if reset and not dry_run:
         console.print("[bold red]Resetting Chroma and papers.json…[/bold red]")
         import shutil
@@ -212,6 +355,7 @@ async def main(dry_run: bool, reset: bool) -> None:
 
     ocr_svc = OCRService()
     embed_svc = EmbeddingService()
+    summary_svc = SummaryService()
     vstore = VectorStore(settings.chroma_persist_dir)
     clusterer = HierarchicalClusterer()
     namer = ClusterNamer()
@@ -234,14 +378,37 @@ async def main(dry_run: bool, reset: bool) -> None:
         console=console,
     )
 
+    if revector:
+        records = store.all()
+        console.print(f"Revectoring [bold]{len(records)}[/bold] existing records")
+        with progress:
+            revector_task = progress.add_task("Revectoring papers", total=len(records))
+            BATCH = 5
+            for i in range(0, len(records), BATCH):
+                batch = records[i : i + BATCH]
+                await asyncio.gather(
+                    *[
+                        revector_one(r, ocr_svc, embed_svc, summary_svc, vstore, store,
+                                     dry_run, progress, revector_task)
+                        for r in batch
+                    ]
+                )
+
+        if dry_run:
+            console.print("[bold yellow]Dry run complete. Nothing written.[/bold yellow]")
+            return
+
+        await finalize_library(vstore, store, clusterer, namer, fs_svc)
+        return
+
     with progress:
         ingest_task = progress.add_task("Ingesting PDFs", total=len(all_pdfs))
         BATCH = 5
         for i in range(0, len(all_pdfs), BATCH):
             batch = all_pdfs[i : i + BATCH]
-            results = await asyncio.gather(
+            await asyncio.gather(
                 *[
-                    process_one(p, s, ocr_svc, embed_svc, vstore, store,
+                    process_one(p, s, ocr_svc, embed_svc, summary_svc, vstore, store,
                                 dry_run, progress, ingest_task)
                     for p, s in batch
                 ]
@@ -253,80 +420,13 @@ async def main(dry_run: bool, reset: bool) -> None:
 
     # Save metadata before clustering
     store.save()
-
-    # Clustering
-    console.print("\nClustering papers…")
-    paper_ids, vectors = vstore.get_all_paper_vectors()
-    if not paper_ids:
-        console.print("[yellow]No papers in vector store — skipping clustering.[/yellow]")
-        return
-
-    tree = clusterer.cluster(paper_ids, vectors)
-    console.print(f"Found [bold]{len(tree)}[/bold] top-level clusters")
-
-    # Name clusters — bottom-up so internal nodes are named after their children
-    console.print("Naming clusters with Gemma…")
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p2:
-        name_task = p2.add_task("Naming…", total=None)
-
-        async def name_node(node) -> None:
-            if node.is_leaf:
-                titles = []
-                for pid in node.paper_ids:
-                    r = store.get(pid)
-                    if r:
-                        titles.append(r.title or r.filename)
-                node.name = await namer.name_cluster(titles)
-            else:
-                for child in node.children:
-                    await name_node(child)
-                node.name = await namer.name_cluster(
-                    [c.name for c in node.children if c.name]
-                )
-            p2.advance(name_task)
-
-        for top_node in tree:
-            await name_node(top_node)
-
-    # Assign cluster paths to records
-    def assign_paths(nodes: list, prefix: str = "") -> None:
-        for node in nodes:
-            path = f"{prefix}/{node.name}" if prefix else node.name
-            if node.is_leaf:
-                for pid in node.paper_ids:
-                    r = store.get(pid)
-                    if r:
-                        r.cluster_path = path
-                        r.symlink_name = fs_svc.make_symlink_name(r)
-            else:
-                assign_paths(node.children, path)
-
-    assign_paths(tree)
-
-    # Rebuild filesystem
-    console.print("Rebuilding output tree…")
-    fs_svc.rebuild_tree(tree, store.as_dict())
-    store.save()
-
-    console.print(f"\n[bold green]Done![/bold green] {len(store)} papers in library.")
-    console.print(f"Output tree: {settings.output_dir}")
-
-    # Print tree summary (recursive, handles any depth)
-    def print_tree(nodes: list, indent: int = 0) -> None:
-        prefix = "  " * indent
-        for node in nodes:
-            if node.is_leaf:
-                console.print(f"{prefix}[dim]({len(node.paper_ids)} papers)[/dim]")
-            else:
-                console.print(f"{prefix}[bold]{node.name}[/bold]/")
-                print_tree(node.children, indent + 1)
-
-    print_tree(tree)
+    await finalize_library(vstore, store, clusterer, namer, fs_svc)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reset", action="store_true")
+    parser.add_argument("--revector", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(args.dry_run, args.reset))
+    asyncio.run(main(args.dry_run, args.reset, args.revector))

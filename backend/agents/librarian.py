@@ -12,6 +12,7 @@ from backend.models import ChunkRecord, PaperRecord
 from backend.services.embeddings import EmbeddingService
 from backend.services.filesystem import FilesystemService
 from backend.services.ocr import OCRService
+from backend.services.summarize import SummaryService, front_matter_text
 from backend.services.vectorstore import VectorStore
 from backend.store import PaperStore, paper_id_for, paper_store
 
@@ -115,6 +116,7 @@ class LibrarianAgent:
         self._embed = embed_svc
         self._vstore = vstore
         self._fs = fs_svc
+        self._summary = SummaryService()
         self._clusterer = HierarchicalClusterer()
         self._namer = ClusterNamer()
 
@@ -136,8 +138,7 @@ class LibrarianAgent:
         tree = self._clusterer.cluster(paper_ids, vectors)
 
         progress_cb("Naming clusters…", 35)
-        for node in tree:
-            await self._name_node(node, paper_store)
+        await self._namer.name_tree(tree, paper_store.as_dict())
 
         progress_cb("Assigning paths…", 80)
         self._assign_paths(tree, paper_store.as_dict())
@@ -182,6 +183,13 @@ class LibrarianAgent:
         title, author, year = extract_metadata(text, pdf_path.stem)
         progress_cb("OCR complete", 20)
 
+        progress_cb("Summarizing front matter…", 22)
+        summary_result = await self._summary.summarize(text, pdf_path.name)
+        title = summary_result.title or title
+        author = summary_result.author_last or author
+        year = summary_result.year or year
+        summary = summary_result.summary
+
         # Chunk
         progress_cb("Chunking text…", 25)
         chunks = chunk_text(text)
@@ -190,7 +198,7 @@ class LibrarianAgent:
         # Embed
         progress_cb("Embedding chunks…", 35)
         chunk_vecs = await self._embed.embed_batch(chunks)
-        paper_vec = self._embed.paper_vector(chunk_vecs)
+        paper_vec = await self._paper_vector(text, pdf_path.name, title, summary)
         progress_cb("Embedded", 60)
 
         # Store in Chroma
@@ -204,7 +212,8 @@ class LibrarianAgent:
             paper_id, paper_vec,
             {"filename": pdf_path.name, "status": status,
              "original_path": str(pdf_path.resolve()),
-             "title": title or "", "author": author or "", "year": year or ""},
+             "title": title or "", "author": author or "", "year": year or "",
+             "summary": summary or ""},
         )
         progress_cb("Stored", 70)
 
@@ -215,26 +224,27 @@ class LibrarianAgent:
 
         # Name — bottom-up so internal nodes are named after their children
         progress_cb("Naming folders…", 80)
-        for node in tree:
-            await self._name_node(node, paper_store, extra=(paper_id, title or ""))
+        pending_record = PaperRecord(
+            id=paper_id, filename=pdf_path.name,
+            original_path=str(pdf_path.resolve()),
+            status=status,  # type: ignore[arg-type]
+            title=title, author=author, year=year,
+            summary=summary,
+            ingested_at=datetime.now(timezone.utc),
+            ocr_cached=True,
+        )
+        all_records = {**paper_store.as_dict(), paper_id: pending_record}
+        await self._namer.name_tree(tree, all_records)
         progress_cb("Folders named", 85)
 
         # Assign cluster paths to every paper in the store
-        all_records = paper_store.as_dict()
         self._assign_paths(tree, all_records)
 
         # Find cluster path of the newly ingested paper
         cluster_path: str | None = self._find_path(tree, paper_id)
 
-        record = PaperRecord(
-            id=paper_id, filename=pdf_path.name,
-            original_path=str(pdf_path.resolve()),
-            status=status,  # type: ignore[arg-type]
-            title=title, author=author, year=year,
-            cluster_path=cluster_path,
-            ingested_at=datetime.now(timezone.utc),
-            ocr_cached=True,
-        )
+        record = pending_record
+        record.cluster_path = cluster_path
         record.symlink_name = self._fs.make_symlink_name(record)
         paper_store.put(record)
 
@@ -247,6 +257,18 @@ class LibrarianAgent:
         paper_store.save()
         progress_cb("Done", 100)
         return record
+
+    async def _paper_vector(
+        self,
+        text: str,
+        filename: str,
+        title: str | None,
+        summary: str | None,
+    ) -> list[float]:
+        if summary:
+            return await self._embed.embed_text(f"{title or filename}\n\n{summary}")
+        front = front_matter_text(text) or (title or filename)
+        return self._embed.paper_vector(await self._embed.embed_batch(chunk_text(front)))
 
     # ── cluster tree helpers ───────────────────────────────────────────────
 

@@ -7,6 +7,8 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     mistral_api_key: str = ""
+    summary_model: str = "gpt-4o-mini"
+    namer_model: str = "gpt-4o-mini"
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = "mxbai-embed-large"

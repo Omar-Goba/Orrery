@@ -15,6 +15,7 @@ class PaperRecord(BaseModel):
     title: str | None = None
     author: str | None = None
     year: str | None = None
+    summary: str | None = None
     cluster_path: str | None = None
     symlink_name: str | None = None
     ingested_at: datetime | None = None

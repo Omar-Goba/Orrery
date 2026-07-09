@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist
+from sklearn.metrics import silhouette_score
 
 
 @dataclass
@@ -31,8 +32,9 @@ ClusterTree = list[ClusterNode]
 class HierarchicalClusterer:
     # ── tuneable parameters ────────────────────────────────────────────────
     MIN_LEAF_SIZE      = 3     # fewest papers allowed in a leaf; below this → don't split
+    MAX_LEAF_SIZE      = 14    # above this, force the best valid split
     MAX_DEPTH          = 6     # hard recursion cap
-    COHESION_THRESHOLD = 0.20  # avg cosine dist below this → cluster is semantically pure
+    MIN_SILHOUETTE     = 0.08  # split only when the best candidate is meaningful
     BRANCH_MIN         = 2     # fewest children at any internal node
     BRANCH_MAX         = 7     # most children at any internal node
 
@@ -47,12 +49,19 @@ class HierarchicalClusterer:
             return []
 
         root = self._cluster(paper_ids, vectors, depth=0)
+        vectors_by_id = dict(zip(paper_ids, vectors))
+        extracted = self._extract_outliers(root, vectors_by_id)
 
-        # If everything ended up in one leaf (too few/cohesive papers), return
+        # If everything ended up in one leaf, return
         # it as a single top-level cluster.
         if root.is_leaf:
-            return [root]
-        return root.children
+            clusters = [root]
+        else:
+            clusters = root.children
+
+        if extracted:
+            clusters.append(ClusterNode(name="Misc", paper_ids=extracted))
+        return clusters
 
     # ── core recursive algorithm ───────────────────────────────────────────
 
@@ -68,28 +77,18 @@ class HierarchicalClusterer:
         if n <= self.MIN_LEAF_SIZE or depth >= self.MAX_DEPTH:
             return ClusterNode(paper_ids=list(paper_ids))
 
-        matrix = np.array(vectors, dtype=np.float64)
-        dist   = np.clip(pdist(matrix, metric="cosine"), 0, None)
-
-        # Cohesion: cluster is already semantically tight → no meaningful split
-        if dist.mean() < self.COHESION_THRESHOLD:
-            return ClusterNode(paper_ids=list(paper_ids))
+        matrix = self._normalized_matrix(vectors)
+        dist = pdist(matrix, metric="euclidean")
 
         # ── Linkage + adaptive k ───────────────────────────────────────────
         Z = linkage(dist, method="ward")
-        k = self._choose_k(Z, n)
+        candidate = self._best_split(Z, matrix, n)
 
-        # Balance enforcement: reduce k if any child would be below MIN_LEAF_SIZE
-        while k > self.BRANCH_MIN:
-            labels = fcluster(Z, k, criterion="maxclust")
-            if min(np.bincount(labels)[1:]) >= self.MIN_LEAF_SIZE:
-                break
-            k -= 1
-        labels = fcluster(Z, k, criterion="maxclust")
+        if candidate is None:
+            return ClusterNode(paper_ids=list(paper_ids))
 
-        # If even at BRANCH_MIN the split is degenerate (e.g. 1 vs n-1),
-        # keep this node as a leaf rather than create satellite 1-paper clusters.
-        if min(np.bincount(labels)[1:]) < self.MIN_LEAF_SIZE:
+        labels, score = candidate
+        if score < self.MIN_SILHOUETTE and n <= self.MAX_LEAF_SIZE:
             return ClusterNode(paper_ids=list(paper_ids))
 
         # ── Recurse into each child ────────────────────────────────────────
@@ -105,30 +104,77 @@ class HierarchicalClusterer:
 
         return ClusterNode(children=children)
 
-    # ── k-selection via largest dendrogram height gap ──────────────────────
+    # ── split selection + cleanup ──────────────────────────────────────────
 
-    def _choose_k(self, Z: np.ndarray, n: int) -> int:
-        """
-        Read the dendrogram's own structure to pick k.
+    def _normalized_matrix(self, vectors: list[list[float]]) -> np.ndarray:
+        matrix = np.array(vectors, dtype=np.float64)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        return np.divide(matrix, norms, out=np.zeros_like(matrix), where=norms > 0)
 
-        Ward stores merge heights in Z[:, 2] sorted ascending.  The last
-        (BRANCH_MAX - 1) diffs cover the range k=2 … k=BRANCH_MAX.  The
-        biggest jump in that window marks the "sharpest" natural partition.
+    def _best_split(
+        self,
+        Z: np.ndarray,
+        matrix: np.ndarray,
+        n: int,
+    ) -> tuple[np.ndarray, float] | None:
+        max_k = min(self.BRANCH_MAX, n // self.MIN_LEAF_SIZE)
+        best_labels: np.ndarray | None = None
+        best_score = float("-inf")
 
-          tail index  → corresponds to k
-          tail[0]     → BRANCH_MAX clusters
-          tail[look-1]→ 2 clusters
-          formula: k = look - gap_pos + 1
-        """
-        heights  = Z[:, 2]
-        diffs    = np.diff(heights)
-        look     = min(self.BRANCH_MAX - 1, len(diffs))
-        if look == 0:
-            return self.BRANCH_MIN
+        for k in range(self.BRANCH_MIN, max_k + 1):
+            labels = fcluster(Z, k, criterion="maxclust")
+            counts = np.bincount(labels)[1:]
+            if len(counts) < self.BRANCH_MIN or counts.min() < self.MIN_LEAF_SIZE:
+                continue
 
-        tail     = diffs[-look:]
-        gap_pos  = int(np.argmax(tail))
-        k        = look - gap_pos + 1
+            score = float(silhouette_score(matrix, labels, metric="cosine"))
+            if score > best_score:
+                best_labels = labels
+                best_score = score
 
-        max_k = n // self.MIN_LEAF_SIZE
-        return max(self.BRANCH_MIN, min(k, self.BRANCH_MAX, max_k))
+        if best_labels is None:
+            return None
+        return best_labels, best_score
+
+    def _extract_outliers(
+        self,
+        node: ClusterNode,
+        vectors_by_id: dict[str, list[float]],
+    ) -> list[str]:
+        if not node.is_leaf:
+            extracted: list[str] = []
+            for child in node.children:
+                extracted.extend(self._extract_outliers(child, vectors_by_id))
+            return extracted
+
+        if len(node.paper_ids) < self.MIN_LEAF_SIZE + 1:
+            return []
+
+        matrix = self._normalized_matrix(
+            [vectors_by_id[paper_id] for paper_id in node.paper_ids]
+        )
+        centroid = matrix.mean(axis=0)
+        centroid_norm = np.linalg.norm(centroid)
+        if centroid_norm == 0:
+            return []
+
+        sims = matrix @ (centroid / centroid_norm)
+        threshold = float(sims.mean() - 2 * sims.std())
+        outlier_idxs = [
+            i for i, sim in enumerate(sims)
+            if sim < threshold and sim < 0.55
+        ]
+        remaining = len(node.paper_ids) - len(outlier_idxs)
+        if not outlier_idxs or remaining < self.MIN_LEAF_SIZE:
+            return []
+
+        outlier_set = set(outlier_idxs)
+        extracted = [
+            paper_id for i, paper_id in enumerate(node.paper_ids)
+            if i in outlier_set
+        ]
+        node.paper_ids = [
+            paper_id for i, paper_id in enumerate(node.paper_ids)
+            if i not in outlier_set
+        ]
+        return extracted

@@ -8,6 +8,7 @@ export interface PaperRecord {
   title: string | null;
   author: string | null;
   year: string | null;
+  summary: string | null;
   cluster_path: string | null;
   symlink_name: string | null;
   ingested_at: string | null;
