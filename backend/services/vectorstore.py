@@ -7,23 +7,59 @@ from chromadb.config import Settings as ChromaSettings
 
 from backend.models import ChunkRecord
 
+# Legacy, pre-multiuser collection names (Tier 2 phases 1-2). Kept as the
+# default when `user_id` is omitted so main.py's single legacy `_vstore`
+# singleton keeps reading exactly the collections it always has — swapping
+# every route to a per-user `VectorStore` is Phase 4's job, not this one's.
 CHUNKS_COLLECTION = "paper_chunks"
 PAPERS_COLLECTION = "paper_vectors"
 COSINE_META = {"hnsw:space": "cosine"}
 
 
 class VectorStore:
-    def __init__(self, persist_path: Path) -> None:
-        persist_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=str(persist_path),
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
+    """Per-user facade over ONE shared `chromadb.PersistentClient` (§4.2).
+
+    The client itself is constructed once, in `lifespan`
+    (`VectorStore.build_client`), and is user-agnostic — only the collection
+    *names* are per-user (`u{user_id}_chunks` / `u{user_id}_papers`). This
+    was chosen over a shared collection with a `user_id` metadata filter
+    because a forgotten `where={"user_id": ...}` in a future query is a
+    silent cross-user leak; a wrong collection name is a loud empty result.
+
+    Every method below the constructor is unchanged from the pre-multiuser
+    version — this class is a mechanical scoping wrap, not a rewrite of the
+    query/embedding logic.
+    """
+
+    def __init__(
+        self,
+        client: chromadb.PersistentClient,
+        user_id: str | None = None,
+    ) -> None:
+        if user_id is None:
+            chunks_name, papers_name = CHUNKS_COLLECTION, PAPERS_COLLECTION
+        else:
+            chunks_name, papers_name = f"u{user_id}_chunks", f"u{user_id}_papers"
+        self._client = client
         self._chunks = self._client.get_or_create_collection(
-            CHUNKS_COLLECTION, metadata=COSINE_META
+            chunks_name, metadata=COSINE_META
         )
         self._papers = self._client.get_or_create_collection(
-            PAPERS_COLLECTION, metadata=COSINE_META
+            papers_name, metadata=COSINE_META
+        )
+
+    @staticmethod
+    def build_client(persist_path: Path) -> chromadb.PersistentClient:
+        """Build the one shared `PersistentClient` for the whole process.
+
+        Called once in `lifespan`; `SpaceRegistry` and main.py's legacy
+        `_vstore` both construct their `VectorStore` facades from the same
+        client instance — never one client per user (plan §4.2/§4.4).
+        """
+        persist_path.mkdir(parents=True, exist_ok=True)
+        return chromadb.PersistentClient(
+            path=str(persist_path),
+            settings=ChromaSettings(anonymized_telemetry=False),
         )
 
     # ── ingestion ──────────────────────────────────────────────────────────
@@ -136,3 +172,16 @@ class VectorStore:
 
     def count_papers(self) -> int:
         return self._papers.count()
+
+    # ── bulk raw access (migration only) ────────────────────────────────────
+    # Deliberately narrow: `backend/tools/migrate_to_multiuser.py` (plan §11)
+    # needs to dump a whole legacy collection and bulk-`upsert` into a fresh
+    # per-user one, id-for-id, without going through the chunk/query-shaped
+    # methods above. No other caller should need these — everyday code reads
+    # and writes one paper/chunk at a time through the methods above.
+
+    def raw_chunks_collection(self):
+        return self._chunks
+
+    def raw_papers_collection(self):
+        return self._papers

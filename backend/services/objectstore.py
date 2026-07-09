@@ -13,6 +13,7 @@ job via a `ScopedObjectStore` wrapper — this store doesn't know about users.
 from __future__ import annotations
 
 import os
+import posixpath
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -194,3 +195,91 @@ class LocalObjectStore:
                     )
         results.sort(key=lambda o: o.key)
         return results
+
+
+class ScopedObjectStore:
+    """Prefix-locked view over a shared `ObjectStore` (plan §6.2).
+
+    `UserSpace.objects` is always a `ScopedObjectStore` wrapping the one
+    shared `LocalObjectStore`, locked to `users/{user_id}`. Handlers and
+    agents only ever see relative keys like `papers/{paper_id}.pdf` — the
+    prefix is invisible to them, which is what makes it safe to hand a
+    `ScopedObjectStore` to code that already trusts a bare `ObjectStore`
+    (`LibrarianAgent` et al. don't need to know they're scoped).
+
+    This is defense in depth *on top of* `LocalObjectStore._resolve`'s own
+    key validation (rule §10.1), not instead of it — even a buggy handler
+    holding a hostile `rel` key cannot escape its prefix, and even a bug in
+    this class can't escape the store root because the inner store still
+    validates the final, prefixed key.
+
+    Deliberately stricter than the plan's §6.2 code sketch: a naive
+    `key.startswith(self._prefix)` check (no trailing separator) is exactly
+    the classic prefix-spoofing bug — `users/abc` is a string-prefix of
+    `users/abcevil`, so `../abcevil/x` would pass a bare `startswith` check
+    even though it plainly targets a sibling user's namespace. This
+    implementation rejects any `rel` containing `..` outright (so that
+    attack never even reaches the `startswith` check) and additionally
+    requires the resolved key to equal the prefix or start with
+    `f"{prefix}/"` (with the separator), not just share a string prefix.
+    """
+
+    def __init__(self, inner: "ObjectStore", prefix: str) -> None:
+        prefix = prefix.strip("/")
+        if not prefix:
+            raise ValueError("ScopedObjectStore prefix must be non-empty")
+        _validate_key(prefix)
+        self._inner = inner
+        self._prefix = prefix
+
+    def _key(self, rel: str, *, allow_empty: bool = False) -> str:
+        if rel is None or (rel == "" and not allow_empty):
+            raise PermissionError(rel)
+        if rel == "":
+            return self._prefix
+        if rel.startswith("/") or rel.startswith("\\") or "\\" in rel or ".." in rel:
+            raise PermissionError(rel)
+        key = posixpath.normpath(f"{self._prefix}/{rel}")
+        if key != self._prefix and not key.startswith(f"{self._prefix}/"):
+            raise PermissionError(rel)
+        return key
+
+    def _strip_prefix(self, key: str) -> str:
+        if key == self._prefix:
+            return ""
+        if key.startswith(f"{self._prefix}/"):
+            return key[len(self._prefix) + 1 :]
+        # Should be unreachable — `_key` guarantees every key it returns is
+        # in-bounds — but never silently hand back a foreign key.
+        raise PermissionError(key)
+
+    def put(self, key: str, stream: BinaryIO, max_bytes: int | None = None) -> int:
+        return self._inner.put(self._key(key), stream, max_bytes=max_bytes)
+
+    def open(self, key: str) -> BinaryIO:
+        return self._inner.open(self._key(key))
+
+    def delete(self, key: str) -> None:
+        self._inner.delete(self._key(key))
+
+    def stat(self, key: str) -> ObjectStat | None:
+        stat = self._inner.stat(self._key(key))
+        if stat is None:
+            return None
+        return ObjectStat(
+            key=self._strip_prefix(stat.key),
+            size_bytes=stat.size_bytes,
+            modified_at=stat.modified_at,
+        )
+
+    def list(self, prefix: str = "") -> list[ObjectStat]:
+        scoped_prefix = self._key(prefix, allow_empty=True)
+        results = self._inner.list(scoped_prefix)
+        return [
+            ObjectStat(
+                key=self._strip_prefix(r.key),
+                size_bytes=r.size_bytes,
+                modified_at=r.modified_at,
+            )
+            for r in results
+        ]

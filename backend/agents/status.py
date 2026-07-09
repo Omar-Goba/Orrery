@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 from backend.services.embeddings import EmbeddingService
 from backend.services.vectorstore import VectorStore
-from backend.store import paper_store
+from backend.store import PaperStore
 
 
 class StatusAgent:
@@ -12,9 +12,11 @@ class StatusAgent:
         self,
         embed_svc: EmbeddingService,
         vstore: VectorStore,
+        paper_store: PaperStore,
     ) -> None:
         self._embed  = embed_svc
         self._vstore = vstore
+        self._papers = paper_store
 
     async def set_status(
         self, description: str, status: str
@@ -29,7 +31,7 @@ class StatusAgent:
             return
 
         pid    = results[0]["paper_id"]
-        record = paper_store.get(pid)
+        record = self._papers.get(pid)
         if not record:
             yield self._sse({"type": "chunk", "text": "Paper found in index but missing from the store — try reindexing."})
             yield self._sse({"type": "done"})
@@ -47,7 +49,7 @@ class StatusAgent:
         # tree is a pure function of records (backend/services/tree.py).
         record.status  = status  # type: ignore[assignment]
         self._vstore.update_paper_status(pid, status)
-        paper_store.save()
+        await self._papers.save()
 
         yield self._sse({"type": "status_update", "paper": record.model_dump(mode="json")})
         yield self._sse({"type": "chunk", "text": f"Marked **{title}** as {label}."})

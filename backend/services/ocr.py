@@ -21,8 +21,18 @@ class OCRService:
 
     SIDECAR_SUFFIX = ".ocr.json"
 
-    async def extract(self, pdf_path: Path, cache_key: str) -> str:
-        sidecar = self._sidecar_path(cache_key)
+    async def extract(
+        self, pdf_path: Path, cache_key: str, cache_dir: Path | None = None
+    ) -> str:
+        """`cache_dir` defaults to the global `settings.ocr_cache_dir`.
+
+        Per-user `UserSpace`s (plan §4.1) pass their own
+        `settings.user_ocr_cache_dir(user_id)` so the cache sidecar physically
+        lives under `users/{user_id}/ocr_cache/` — even though `OCRService`
+        itself is a shared, user-agnostic singleton (§4.4), each call site
+        picks where its own sidecar lands.
+        """
+        sidecar = self._sidecar_path(cache_key, cache_dir)
         if sidecar.exists():
             data = json.loads(sidecar.read_text())
             return data["text"]
@@ -42,8 +52,8 @@ class OCRService:
         except Exception:
             return ""
 
-    def _sidecar_path(self, cache_key: str) -> Path:
-        cache_dir = settings.ocr_cache_dir
+    def _sidecar_path(self, cache_key: str, cache_dir: Path | None = None) -> Path:
+        cache_dir = cache_dir if cache_dir is not None else settings.ocr_cache_dir
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir / f"{cache_key}{self.SIDECAR_SUFFIX}"
 

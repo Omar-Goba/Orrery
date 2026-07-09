@@ -16,7 +16,7 @@ from backend.services.objectstore import ObjectStore
 from backend.services.ocr import OCRService
 from backend.services.summarize import SummaryService, front_matter_text
 from backend.services.vectorstore import VectorStore
-from backend.store import PaperStore, paper_store
+from backend.store import PaperStore
 
 MAX_CHARS = 2000
 OVERLAP_CHARS = 150
@@ -113,11 +113,19 @@ class LibrarianAgent:
         embed_svc: EmbeddingService,
         vstore: VectorStore,
         object_store: ObjectStore,
+        paper_store: PaperStore,
+        ocr_cache_dir: Path | None = None,
     ) -> None:
         self._ocr = ocr_svc
         self._embed = embed_svc
         self._vstore = vstore
         self._objects = object_store
+        self._papers = paper_store
+        # Defaults to the global `settings.ocr_cache_dir`; a per-user
+        # `UserSpace` passes `settings.user_ocr_cache_dir(user_id)` so the
+        # sidecar physically lands under `users/{user_id}/ocr_cache/` (plan
+        # §4.1) even though `OCRService` itself stays a shared singleton.
+        self._ocr_cache_dir = ocr_cache_dir
         self._summary = SummaryService()
         self._clusterer = HierarchicalClusterer()
         self._namer = ClusterNamer()
@@ -140,13 +148,13 @@ class LibrarianAgent:
         tree = self._clusterer.cluster(paper_ids, vectors)
 
         progress_cb("Naming clusters…", 35)
-        await self._namer.name_tree(tree, paper_store.as_dict())
+        await self._namer.name_tree(tree, self._papers.as_dict())
 
         progress_cb("Assigning paths…", 88)
-        self._assign_paths(tree, paper_store.as_dict())
+        self._assign_paths(tree, self._papers.as_dict())
 
         progress_cb("Saving…", 96)
-        paper_store.save()
+        await self._papers.save()
 
         progress_cb("Done", 100)
 
@@ -158,7 +166,7 @@ class LibrarianAgent:
         papers = []
         for r in results:
             pid = r["paper_id"]
-            record = paper_store.get(pid)
+            record = self._papers.get(pid)
             if record:
                 papers.append(record.model_dump(mode="json"))
         yield self._sse({"type": "result", "papers": papers})
@@ -191,7 +199,9 @@ class LibrarianAgent:
         try:
             with open(tmp_fd, "wb") as tmp_file, self._objects.open(object_key) as src:
                 shutil.copyfileobj(src, tmp_file)
-            text = await self._ocr.extract(tmp_path, cache_key=paper_id)
+            text = await self._ocr.extract(
+                tmp_path, cache_key=paper_id, cache_dir=self._ocr_cache_dir
+            )
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -250,7 +260,7 @@ class LibrarianAgent:
             ingested_at=datetime.now(timezone.utc),
             ocr_cached=True,
         )
-        all_records = {**paper_store.as_dict(), paper_id: pending_record}
+        all_records = {**self._papers.as_dict(), paper_id: pending_record}
         await self._namer.name_tree(tree, all_records)
         progress_cb("Folders named", 85)
 
@@ -262,13 +272,13 @@ class LibrarianAgent:
 
         record = pending_record
         record.cluster_path = cluster_path
-        paper_store.put(record)
+        self._papers.put(record)
 
         progress_cb("Assigning paths…", 90)
 
         # Persist — no disk-tree rebuild: GET /api/tree is a pure function
         # of these records (backend/services/tree.py).
-        paper_store.save()
+        await self._papers.save()
         progress_cb("Done", 100)
         return record
 

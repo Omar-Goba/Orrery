@@ -9,7 +9,7 @@ from backend.config import settings
 from backend.models import Citation, PaperRecord
 from backend.services.embeddings import EmbeddingService
 from backend.services.vectorstore import VectorStore
-from backend.store import paper_store
+from backend.store import PaperStore
 
 SYSTEM_PROMPT = """\
 You are a research assistant with access to a curated personal paper library.
@@ -20,10 +20,16 @@ If the answer is not in the excerpts, say so honestly — do not hallucinate."""
 
 
 class OracleAgent:
-    def __init__(self, embed_svc: EmbeddingService, vstore: VectorStore) -> None:
+    def __init__(
+        self,
+        embed_svc: EmbeddingService,
+        vstore: VectorStore,
+        paper_store: PaperStore,
+    ) -> None:
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
         self._embed = embed_svc
         self._vstore = vstore
+        self._papers = paper_store
 
     async def stream(self, question: str) -> AsyncGenerator[str, None]:
         q_vec = await self._embed.embed_text(question)
@@ -59,7 +65,7 @@ class OracleAgent:
         parts: list[str] = []
         for i, c in enumerate(chunks, 1):
             pid = c["paper_id"]
-            record: PaperRecord | None = paper_store.get(pid)
+            record: PaperRecord | None = self._papers.get(pid)
             author = (record.author or "Unknown") if record else "Unknown"
             year = (record.year or "n.d.") if record else "n.d."
             title = (record.title or pid) if record else pid
@@ -74,7 +80,7 @@ class OracleAgent:
         pid_set = {c["paper_id"] for c in chunks}
 
         for pid in pid_set:
-            record = paper_store.get(pid)
+            record = self._papers.get(pid)
             if not record or pid in seen:
                 continue
             author = record.author or "Unknown"

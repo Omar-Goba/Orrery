@@ -6,7 +6,7 @@ from openai import AsyncOpenAI
 
 from backend.config import settings
 from backend.models import PaperRecord, Recommendation
-from backend.store import paper_store
+from backend.store import PaperStore
 
 SYSTEM_PROMPT = """\
 You are a research librarian recommending what to read next from a personal paper library.
@@ -19,11 +19,12 @@ Respond with strict JSON only, in this exact shape:
 
 
 class CuratorAgent:
-    def __init__(self) -> None:
+    def __init__(self, paper_store: PaperStore) -> None:
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._papers = paper_store
 
     async def recommend(self) -> list[Recommendation]:
-        all_papers = paper_store.all()
+        all_papers = self._papers.all()
         toread = [p for p in all_papers if p.status == "toread"]
         read = [p for p in all_papers if p.status == "read"]
 
@@ -58,7 +59,7 @@ class CuratorAgent:
             reason = pick.get("reason", "")
             if paper_id not in candidate_ids:
                 continue
-            record = paper_store.get(paper_id)
+            record = self._papers.get(paper_id)
             if not record:
                 continue
             recommendations.append(Recommendation(

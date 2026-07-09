@@ -1,7 +1,18 @@
-"""Shared in-memory paper registry backed by dbs/papers.json."""
+"""In-memory paper registry backed by a JSON file (plan §4.1/§4.4).
+
+Pre-multiuser, there was exactly one `PaperStore` (the module-level
+`paper_store` below) pointed at `settings.papers_json`. Phase 3 gives every
+`UserSpace` its own instance, pointed at `settings.user_papers_json(user_id)`
+— `PaperStore.__init__` takes an optional path so both cases share one
+class. The module-level singleton stays for backward compatibility: main.py
+still uses it directly today (Phase 4 is what swaps handlers over to
+`space.papers`).
+"""
 from __future__ import annotations
+import asyncio
 import hashlib
 import json
+from pathlib import Path
 from typing import Iterator
 
 from backend.config import settings
@@ -22,25 +33,34 @@ def paper_id_for_bytes(data: bytes) -> str:
 
 
 class PaperStore:
-    def __init__(self) -> None:
+    def __init__(self, path: Path | None = None) -> None:
+        self._path: Path = Path(path) if path is not None else settings.papers_json
         self._records: dict[str, PaperRecord] = {}
+        # Per-instance lock (plan §4.4 concurrency note): serializes save()
+        # so concurrent callers can't interleave two `_write` calls and tear
+        # the file. Good enough for tens of users; SQLite migration is the
+        # escape hatch if that assumption breaks.
+        self._lock = asyncio.Lock()
 
     def load(self) -> None:
-        p = settings.papers_json
-        if p.exists():
-            raw = json.loads(p.read_text())
+        if self._path.exists():
+            raw = json.loads(self._path.read_text())
             self._records = {k: PaperRecord(**v) for k, v in raw.items()}
 
-    def save(self) -> None:
-        settings.papers_json.parent.mkdir(parents=True, exist_ok=True)
-        tmp = settings.papers_json.with_suffix(".tmp")
+    async def save(self) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._write)
+
+    def _write(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(".tmp")
         tmp.write_text(
             json.dumps(
                 {k: v.model_dump(mode="json") for k, v in self._records.items()},
                 indent=2,
             )
         )
-        tmp.replace(settings.papers_json)
+        tmp.replace(self._path)
 
     def get(self, paper_id: str) -> PaperRecord | None:
         return self._records.get(paper_id)

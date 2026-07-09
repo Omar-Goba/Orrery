@@ -36,6 +36,7 @@ from backend.services.ocr import OCRService
 from backend.services.similarity import top_k_neighbors
 from backend.services.tree import build_tree
 from backend.services.vectorstore import VectorStore
+from backend.space import SpaceRegistry
 from backend.store import paper_store
 
 # ── shared singletons ──────────────────────────────────────────────────────
@@ -66,13 +67,28 @@ async def lifespan(app: FastAPI):
 
     _ocr_svc = OCRService()
     _embed_svc = EmbeddingService()
-    _vstore = VectorStore(settings.chroma_persist_dir)
+    # One shared Chroma client for the whole process (plan §4.2/§4.4) — the
+    # legacy global `_vstore` below and every per-user `VectorStore` built by
+    # `SpaceRegistry` construct their facade from this same client, never a
+    # client per user.
+    _chroma_client = VectorStore.build_client(settings.chroma_persist_dir)
+    _vstore = VectorStore(_chroma_client)
     _object_store = LocalObjectStore(settings.objects_dir)
-    _oracle = OracleAgent(_embed_svc, _vstore)
-    _librarian = LibrarianAgent(_ocr_svc, _embed_svc, _vstore, _object_store)
-    _status_agent = StatusAgent(_embed_svc, _vstore)
+    _oracle = OracleAgent(_embed_svc, _vstore, paper_store)
+    _librarian = LibrarianAgent(_ocr_svc, _embed_svc, _vstore, _object_store, paper_store)
+    _status_agent = StatusAgent(_embed_svc, _vstore, paper_store)
     _master = MasterAgent(_oracle, _librarian, _status_agent)
-    _curator = CuratorAgent()
+    _curator = CuratorAgent(paper_store)
+
+    # Phase 4 wires `current_space` into routes; this phase only makes the
+    # registry available on `app.state` so that dependency has somewhere to
+    # resolve from.
+    app.state.space_registry = SpaceRegistry(
+        chroma_client=_chroma_client,
+        object_store=_object_store,
+        ocr_svc=_ocr_svc,
+        embed_svc=_embed_svc,
+    )
     yield
 
 
@@ -179,7 +195,7 @@ async def update_paper_status(paper_id: str, body: StatusUpdateRequest):
     # No disk mutation — the tree is a pure function of records.
     record.status = body.status  # type: ignore[assignment]
     _vstore.update_paper_status(paper_id, body.status)
-    paper_store.save()
+    await paper_store.save()
     return record
 
 

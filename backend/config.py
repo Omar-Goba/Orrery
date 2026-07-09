@@ -39,6 +39,14 @@ class Settings(BaseSettings):
         default=100 * 1024 * 1024, validation_alias="ORRERY_MAX_PDF_BYTES"
     )  # 100 MiB
 
+    # ── per-user galaxies (Tier 2, phase 3) ─────────────────────────────────
+    # Generous default quota for the Keeper's own galaxy, set by the
+    # migration script (§11) — separate from `default_quota_bytes`, which is
+    # what new Voyager signups get.
+    keeper_quota_bytes: int = Field(
+        default=10 * 1024 * 1024 * 1024, validation_alias="ORRERY_KEEPER_QUOTA"
+    )  # 10 GiB
+
     @property
     def objects_dir(self) -> Path:
         """Root of the ObjectStore. The only PDF-bytes root in the app —
@@ -57,6 +65,26 @@ class Settings(BaseSettings):
     @property
     def auth_db_path(self) -> Path:
         return self.dbs_dir / "orrery.db"
+
+    @property
+    def users_dir(self) -> Path:
+        """Root of every per-user galaxy (plan §4.1)."""
+        return self.dbs_dir / "users"
+
+    def user_dir(self, user_id: str) -> Path:
+        return self.users_dir / user_id
+
+    def user_papers_json(self, user_id: str) -> Path:
+        return self.user_dir(user_id) / "papers.json"
+
+    def user_ocr_cache_dir(self, user_id: str) -> Path:
+        return self.user_dir(user_id) / "ocr_cache"
+
+    def user_object_prefix(self, user_id: str) -> str:
+        """`ScopedObjectStore` prefix for a user's objects, e.g.
+        `users/{user_id}` (POSIX, relative — matches `ObjectStore` key
+        shape, not a filesystem path)."""
+        return f"users/{user_id}"
 
     @property
     def cors_origins_list(self) -> list[str]:
