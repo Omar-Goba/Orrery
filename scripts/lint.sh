@@ -20,6 +20,14 @@ lint_backend() {
   py="$(python_bin)"
   run_quiet "backend python compile check" "$py" -m py_compile \
     "$ROOT/backend/agents/librarian.py" \
+    "$ROOT/backend/auth/__init__.py" \
+    "$ROOT/backend/auth/db.py" \
+    "$ROOT/backend/auth/deps.py" \
+    "$ROOT/backend/auth/models.py" \
+    "$ROOT/backend/auth/ratelimit.py" \
+    "$ROOT/backend/auth/router.py" \
+    "$ROOT/backend/auth/security.py" \
+    "$ROOT/backend/auth/service.py" \
     "$ROOT/backend/clustering/hierarchical.py" \
     "$ROOT/backend/clustering/namer.py" \
     "$ROOT/backend/config.py" \
@@ -31,6 +39,9 @@ lint_backend() {
     "$ROOT/backend/services/summarize.py" \
     "$ROOT/backend/services/vectorstore.py" \
     "$ROOT/backend/store.py" \
+    "$ROOT/backend/tests/conftest.py" \
+    "$ROOT/backend/tests/test_auth_api.py" \
+    "$ROOT/backend/tests/test_auth_unit.py" \
     "$ROOT/backend/tests/test_hierarchical.py" \
     "$ROOT/backend/tests/test_namer.py" \
     "$ROOT/backend/tests/test_summarize.py" \

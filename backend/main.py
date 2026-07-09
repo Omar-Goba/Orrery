@@ -16,6 +16,8 @@ from backend.agents.librarian import LibrarianAgent
 from backend.agents.master import MasterAgent
 from backend.agents.oracle import OracleAgent
 from backend.agents.status import StatusAgent
+from backend.auth.db import init_db
+from backend.auth.router import router as auth_router
 from backend.config import settings
 from backend.models import (
     ChatRequest,
@@ -55,6 +57,8 @@ async def lifespan(app: FastAPI):
     settings.input_dir.mkdir(parents=True, exist_ok=True)
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
+    init_db()  # dbs/orrery.db — users + sessions (Tier 2, phase 1)
+
     paper_store.load()
 
     _ocr_svc = OCRService()
@@ -76,7 +80,10 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
+
+app.include_router(auth_router)
 
 
 # ── papers ─────────────────────────────────────────────────────────────────

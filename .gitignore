@@ -6,6 +6,7 @@ __pycache__/
 *.ocr.json
 dbs/chroma/
 dbs/papers.json
+dbs/orrery.db
 dbs/output/
 dbs/input/*.pdf
 bulk_ingest_errors.jsonl
