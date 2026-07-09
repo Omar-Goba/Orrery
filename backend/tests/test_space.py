@@ -5,8 +5,7 @@ whole point of namespacing by store/collection/prefix instead of a
 `WHERE owner_id =` filter (plan §2): there should be no code path that could
 accidentally return or accept another user's data.
 
-`current_space` is not wired into any route yet (Phase 4's job); it's
-exercised directly here as a plain async function.
+`current_space` is also exercised directly here as a plain async function.
 """
 from __future__ import annotations
 

@@ -1,12 +1,10 @@
 """In-memory paper registry backed by a JSON file (plan §4.1/§4.4).
 
 Pre-multiuser, there was exactly one `PaperStore` (the module-level
-`paper_store` below) pointed at `settings.papers_json`. Phase 3 gives every
-`UserSpace` its own instance, pointed at `settings.user_papers_json(user_id)`
-— `PaperStore.__init__` takes an optional path so both cases share one
-class. The module-level singleton stays for backward compatibility: main.py
-still uses it directly today (Phase 4 is what swaps handlers over to
-`space.papers`).
+`paper_store` below) pointed at `settings.papers_json`. Every `UserSpace` now
+gets its own instance, pointed at `settings.user_papers_json(user_id)`.
+`PaperStore.__init__` takes an optional path so both cases share one class; the
+module-level singleton remains only for legacy migration/tooling code.
 """
 from __future__ import annotations
 import asyncio
@@ -67,6 +65,9 @@ class PaperStore:
 
     def put(self, record: PaperRecord) -> None:
         self._records[record.id] = record
+
+    def delete(self, paper_id: str) -> bool:
+        return self._records.pop(paper_id, None) is not None
 
     def all(self) -> list[PaperRecord]:
         return list(self._records.values())

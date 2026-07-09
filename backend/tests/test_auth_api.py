@@ -7,8 +7,8 @@ from backend.auth.service import GENERIC_LOGIN_ERROR, SESSION_COOKIE_NAME
 from backend.config import settings
 
 
-def test_signup_sets_cookie_and_me_matches(client) -> None:
-    monkey_invite(client)
+def test_signup_sets_cookie_and_me_matches(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkey_invite(monkeypatch)
     resp = client.post(
         "/api/auth/signup",
         json={"handle": "novoyager", "password": "longenough123", "invite_code": "letmein"},
@@ -26,8 +26,8 @@ def test_signup_sets_cookie_and_me_matches(client) -> None:
     assert me.json() == body
 
 
-def test_signup_reserved_handle_rejected(client) -> None:
-    monkey_invite(client)
+def test_signup_reserved_handle_rejected(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkey_invite(monkeypatch)
     resp = client.post(
         "/api/auth/signup",
         json={"handle": "admin", "password": "longenough123", "invite_code": "letmein"},
@@ -44,8 +44,10 @@ def test_signup_closed_mode_rejected(client, monkeypatch: pytest.MonkeyPatch) ->
     assert resp.status_code == 403
 
 
-def test_signup_invite_mode_missing_or_wrong_code_rejected(client) -> None:
-    monkey_invite(client)
+def test_signup_invite_mode_missing_or_wrong_code_rejected(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkey_invite(monkeypatch)
     resp = client.post(
         "/api/auth/signup",
         json={"handle": "someone2", "password": "longenough123"},
@@ -59,8 +61,10 @@ def test_signup_invite_mode_missing_or_wrong_code_rejected(client) -> None:
     assert resp.status_code == 403
 
 
-def test_signup_invite_mode_correct_code_succeeds(client) -> None:
-    monkey_invite(client)
+def test_signup_invite_mode_correct_code_succeeds(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkey_invite(monkeypatch)
     resp = client.post(
         "/api/auth/signup",
         json={"handle": "someone3", "password": "longenough123", "invite_code": "letmein"},
@@ -68,8 +72,10 @@ def test_signup_invite_mode_correct_code_succeeds(client) -> None:
     assert resp.status_code == 201
 
 
-def test_login_wrong_password_and_nonexistent_user_identical_error(client) -> None:
-    monkey_invite(client)
+def test_login_wrong_password_and_nonexistent_user_identical_error(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkey_invite(monkeypatch)
     client.post(
         "/api/auth/signup",
         json={"handle": "loginuser", "password": "correctpassword1", "invite_code": "letmein"},
@@ -90,8 +96,10 @@ def test_login_wrong_password_and_nonexistent_user_identical_error(client) -> No
     assert wrong_pw.json()["detail"] == no_user.json()["detail"]
 
 
-def test_login_correct_password_succeeds_and_sets_cookie(client) -> None:
-    monkey_invite(client)
+def test_login_correct_password_succeeds_and_sets_cookie(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkey_invite(monkeypatch)
     client.post(
         "/api/auth/signup",
         json={"handle": "loginuser2", "password": "correctpassword1", "invite_code": "letmein"},
@@ -105,8 +113,10 @@ def test_login_correct_password_succeeds_and_sets_cookie(client) -> None:
     assert SESSION_COOKIE_NAME in resp.cookies
 
 
-def test_logout_clears_cookie_and_invalidates_session(client) -> None:
-    monkey_invite(client)
+def test_logout_clears_cookie_and_invalidates_session(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkey_invite(monkeypatch)
     client.post(
         "/api/auth/signup",
         json={"handle": "logoutuser", "password": "correctpassword1", "invite_code": "letmein"},
@@ -122,8 +132,8 @@ def test_logout_clears_cookie_and_invalidates_session(client) -> None:
     assert me_after.status_code == 401
 
 
-def test_login_rate_limit_5_per_minute(client) -> None:
-    monkey_invite(client)
+def test_login_rate_limit_5_per_minute(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkey_invite(monkeypatch)
     client.post(
         "/api/auth/signup",
         json={"handle": "ratelimituser", "password": "correctpassword1", "invite_code": "letmein"},
@@ -142,8 +152,8 @@ def test_login_rate_limit_5_per_minute(client) -> None:
     assert statuses[5] == 429
 
 
-def test_signup_rate_limit_3_per_hour(client) -> None:
-    monkey_invite(client)
+def test_signup_rate_limit_3_per_hour(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkey_invite(monkeypatch)
     statuses = []
     for i in range(4):
         resp = client.post(
@@ -161,6 +171,6 @@ def test_signup_rate_limit_3_per_hour(client) -> None:
     assert statuses[3] == 429
 
 
-def monkey_invite(client) -> None:
-    settings.signup_mode = "invite"
-    settings.invite_code = "letmein"
+def monkey_invite(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "signup_mode", "invite")
+    monkeypatch.setattr(settings, "invite_code", "letmein")

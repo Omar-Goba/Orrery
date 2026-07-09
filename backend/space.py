@@ -1,12 +1,9 @@
 """Per-user runtime context: `UserSpace` + `SpaceRegistry` (plan §4.4).
 
-Phase 3 builds this so it's fully available and fully tested in isolation.
-Wiring it into existing routes — swapping every handler from the old global
-`paper_store`/`vstore` singletons to `space.papers`/`space.vstore` — is
-Phase 4's job (plan §12: phase 4 depends on phase 3). `main.py`'s `lifespan`
-constructs the one process-wide `SpaceRegistry` and stores it on
-`app.state.space_registry` so Phase 4 has something to `Depends()` on; no
-existing route uses `current_space` yet.
+`main.py`'s `lifespan` constructs the one process-wide `SpaceRegistry` and
+stores it on `app.state.space_registry`; normal API routes resolve
+`current_space` from there so each request uses the authenticated user's own
+paper store, vector collections, object prefix, and agents.
 """
 from __future__ import annotations
 
@@ -153,10 +150,5 @@ async def current_space(
     user: User = Depends(current_user),
     registry: SpaceRegistry = Depends(get_space_registry),
 ) -> UserSpace:
-    """`current_user` (Phase 1) -> `registry.get(user.id)` -> `UserSpace`.
-
-    Not wired into any route yet (plan §12, phase 4). This dependency exists
-    so Phase 4 can add `space: UserSpace = Depends(current_space)` to the
-    existing handlers as a mechanical swap.
-    """
+    """`current_user` -> `registry.get(user.id)` -> `UserSpace`."""
     return await registry.get_locked(user.id)

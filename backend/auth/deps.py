@@ -1,9 +1,7 @@
 """FastAPI dependencies: session resolution, role gate, CSRF belt-and-suspenders.
 
-Per plan §3.4: every existing endpoint eventually gains
-`user: User = Depends(current_user)` — that wiring is Phase 4's job. This
-phase only defines the dependencies and uses them on the new `/api/auth/*`
-routes.
+Normal API routes authenticate through `backend.space.current_space`, which
+depends on `current_user`; auth routes use `current_user` directly where needed.
 """
 from __future__ import annotations
 

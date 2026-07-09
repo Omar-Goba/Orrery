@@ -7,10 +7,9 @@ from chromadb.config import Settings as ChromaSettings
 
 from backend.models import ChunkRecord
 
-# Legacy, pre-multiuser collection names (Tier 2 phases 1-2). Kept as the
-# default when `user_id` is omitted so main.py's single legacy `_vstore`
-# singleton keeps reading exactly the collections it always has — swapping
-# every route to a per-user `VectorStore` is Phase 4's job, not this one's.
+# Legacy, pre-multiuser collection names. Kept as the default when `user_id`
+# is omitted for migration tooling and narrow compatibility tests; normal API
+# routes use per-user `VectorStore` instances via `UserSpace`.
 CHUNKS_COLLECTION = "paper_chunks"
 PAPERS_COLLECTION = "paper_vectors"
 COSINE_META = {"hnsw:space": "cosine"}
@@ -52,9 +51,9 @@ class VectorStore:
     def build_client(persist_path: Path) -> chromadb.PersistentClient:
         """Build the one shared `PersistentClient` for the whole process.
 
-        Called once in `lifespan`; `SpaceRegistry` and main.py's legacy
-        `_vstore` both construct their `VectorStore` facades from the same
-        client instance — never one client per user (plan §4.2/§4.4).
+        Called once in `lifespan`; `SpaceRegistry` constructs per-user
+        `VectorStore` facades from the same client instance — never one client
+        per user (plan §4.2/§4.4).
         """
         persist_path.mkdir(parents=True, exist_ok=True)
         return chromadb.PersistentClient(

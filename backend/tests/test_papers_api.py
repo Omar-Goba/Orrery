@@ -81,7 +81,55 @@ def app_client(tmp_dbs: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestC
     from backend.main import app
 
     with TestClient(app) as c:
+        _signup(c, "alice", monkeypatch)
         yield c
+
+
+@pytest.fixture()
+def app_clients(tmp_dbs: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, TestClient]]:
+    monkeypatch.setattr(EmbeddingService, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(EmbeddingService, "embed_batch", _fake_embed_batch)
+    monkeypatch.setattr(SummaryService, "summarize", _fake_summarize)
+    monkeypatch.setattr(ClusterNamer, "name_cluster", _fake_name_cluster)
+    monkeypatch.setattr(ClusterNamer, "name_tree", _fake_name_tree)
+
+    from backend.main import app
+
+    with TestClient(app) as alice, TestClient(app) as bob:
+        _signup(alice, "alice", monkeypatch)
+        _signup(bob, "bob", monkeypatch)
+        yield alice, bob
+
+
+def _signup(
+    client: TestClient,
+    handle: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "signup_mode", "invite")
+    monkeypatch.setattr(settings, "invite_code", "letmein")
+    resp = client.post(
+        "/api/auth/signup",
+        json={
+            "handle": handle,
+            "password": "longenough123",
+            "invite_code": "letmein",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def _user_id(handle: str) -> str:
+    from sqlmodel import Session, select
+
+    from backend.auth.db import get_engine
+    from backend.auth.models import User
+
+    with Session(get_engine()) as db:
+        user = db.exec(select(User).where(User.handle == handle)).one()
+        return user.id
 
 
 def _upload(client: TestClient, data: bytes, filename: str, status: str = "toread"):
@@ -115,6 +163,35 @@ def _ingest(client: TestClient, data: bytes, filename: str, status: str = "torea
     assert events, "expected at least one SSE event"
     assert events[-1]["type"] == "done", events
     return events[-1]["paper"]
+
+
+def _assert_unauthorized(resp) -> None:
+    assert resp.status_code == 401, resp.text
+
+
+# ── auth enforcement ────────────────────────────────────────────────────────
+
+def test_anonymous_normal_api_routes_are_401(tmp_dbs: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(EmbeddingService, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(EmbeddingService, "embed_batch", _fake_embed_batch)
+    monkeypatch.setattr(SummaryService, "summarize", _fake_summarize)
+    monkeypatch.setattr(ClusterNamer, "name_cluster", _fake_name_cluster)
+    monkeypatch.setattr(ClusterNamer, "name_tree", _fake_name_tree)
+
+    from backend.main import app
+
+    with TestClient(app) as anon:
+        _assert_unauthorized(anon.get("/api/papers"))
+        _assert_unauthorized(anon.get("/api/tree"))
+        _assert_unauthorized(anon.get("/api/similarity"))
+        _assert_unauthorized(anon.get("/api/recommendations"))
+        _assert_unauthorized(anon.post("/api/chat", json={"message": "hi", "history": []}))
+        _assert_unauthorized(anon.post("/api/reindex"))
+        _assert_unauthorized(_upload(anon, _pdf_bytes(b"anon-upload"), "anon.pdf"))
+        _assert_unauthorized(anon.get("/api/papers/upload/job-id/progress"))
+        _assert_unauthorized(anon.patch("/api/papers/paper-id/status", json={"status": "read"}))
+        _assert_unauthorized(anon.get("/api/papers/paper-id/file"))
+        _assert_unauthorized(anon.delete("/api/papers/paper-id"))
 
 
 # ── SSE progress-event shape (frontend contract) ────────────────────────────
@@ -154,9 +231,77 @@ def test_upload_then_download_round_trip(app_client: TestClient) -> None:
     assert "roundtrip.pdf" in file_resp.headers["content-disposition"]
 
 
+def test_user_can_list_status_and_delete_own_paper(app_client: TestClient) -> None:
+    data = _pdf_bytes(b"own-delete")
+    paper = _ingest(app_client, data, "own.pdf", status="toread")
+    space = app_client.app.state.space_registry.get(_user_id("alice"))
+    key = f"papers/{paper['id']}.pdf"
+
+    assert space.objects.stat(key) is not None
+    assert space.vstore.paper_exists(paper["id"])
+
+    listed = app_client.get("/api/papers")
+    assert listed.status_code == 200
+    assert [p["id"] for p in listed.json()] == [paper["id"]]
+
+    status_resp = app_client.patch(
+        f"/api/papers/{paper['id']}/status", json={"status": "read"}
+    )
+    assert status_resp.status_code == 200
+    assert status_resp.json()["status"] == "read"
+
+    delete_resp = app_client.delete(f"/api/papers/{paper['id']}")
+    assert delete_resp.status_code == 204
+    assert delete_resp.content == b""
+
+    assert app_client.get("/api/papers").json() == []
+    assert app_client.get(f"/api/papers/{paper['id']}/file").status_code == 404
+    assert space.objects.stat(key) is None
+    assert not space.vstore.paper_exists(paper["id"])
+
+
 def test_download_unknown_paper_is_404(app_client: TestClient) -> None:
     resp = app_client.get("/api/papers/doesnotexist/file")
     assert resp.status_code == 404
+
+
+def test_cross_user_papers_are_invisible_and_exact_routes_404(
+    app_clients: tuple[TestClient, TestClient],
+) -> None:
+    alice, bob = app_clients
+    alice_paper = _ingest(alice, _pdf_bytes(b"alice-private"), "alice.pdf")
+
+    bob_list = bob.get("/api/papers")
+    assert bob_list.status_code == 200
+    assert bob_list.json() == []
+
+    bob_tree = bob.get("/api/tree")
+    assert bob_tree.status_code == 200
+    assert alice_paper["id"] not in json.dumps(bob_tree.json())
+
+    foreign_id = alice_paper["id"]
+    assert bob.get(f"/api/papers/{foreign_id}/file").status_code == 404
+    assert bob.patch(f"/api/papers/{foreign_id}/status", json={"status": "read"}).status_code == 404
+    assert bob.delete(f"/api/papers/{foreign_id}").status_code == 404
+
+    alice_file = alice.get(f"/api/papers/{foreign_id}/file")
+    assert alice_file.status_code == 200
+    assert alice_file.content == _pdf_bytes(b"alice-private")
+
+
+def test_upload_progress_jobs_are_user_scoped(
+    app_clients: tuple[TestClient, TestClient],
+) -> None:
+    alice, bob = app_clients
+    upload = _upload(alice, _pdf_bytes(b"progress-owner"), "progress.pdf")
+    assert upload.status_code == 200
+    job_id = upload.json()["job_id"]
+
+    foreign = bob.get(f"/api/papers/upload/{job_id}/progress")
+    assert foreign.status_code == 404
+
+    events = _drain_progress(alice, job_id)
+    assert events[-1]["type"] == "done"
 
 
 # ── content-hash dedup ───────────────────────────────────────────────────────
@@ -287,4 +432,5 @@ def test_ingest_failure_deletes_the_object(
 
     paper_id = hashlib.sha256(data).hexdigest()[:16]
     key = f"papers/{paper_id}.pdf"
-    assert main_module._object_store.stat(key) is None
+    leaked = [stat.key for stat in main_module._object_store.list("users/")]
+    assert all(not stat_key.endswith(f"/{key}") for stat_key in leaked)

@@ -5,19 +5,15 @@ import json
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncGenerator, BinaryIO
 from urllib.parse import quote
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from backend.agents.curator import CuratorAgent
-from backend.agents.librarian import LibrarianAgent
-from backend.agents.master import MasterAgent
-from backend.agents.oracle import OracleAgent
-from backend.agents.status import StatusAgent
 from backend.auth.db import init_db
 from backend.auth.router import router as auth_router
 from backend.config import settings
@@ -36,53 +32,42 @@ from backend.services.ocr import OCRService
 from backend.services.similarity import top_k_neighbors
 from backend.services.tree import build_tree
 from backend.services.vectorstore import VectorStore
-from backend.space import SpaceRegistry
-from backend.store import paper_store
+from backend.space import SpaceRegistry, UserSpace, current_space
 
 # ── shared singletons ──────────────────────────────────────────────────────
 _ocr_svc: OCRService
 _embed_svc: EmbeddingService
-_vstore: VectorStore
 _object_store: ObjectStore
-_oracle: OracleAgent
-_librarian: LibrarianAgent
-_status_agent: StatusAgent
-_master: MasterAgent
-_curator: CuratorAgent
 
-# in-memory job registry  {job_id: asyncio.Queue}
-_jobs: dict[str, asyncio.Queue] = {}
+
+@dataclass
+class UploadJob:
+    user_id: str
+    queue: asyncio.Queue
+
+
+# in-memory job registry  {job_id: UploadJob}
+_jobs: dict[str, UploadJob] = {}
 
 _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _ocr_svc, _embed_svc, _vstore, _object_store, _oracle, _librarian, _status_agent, _master, _curator
+    global _ocr_svc, _embed_svc, _object_store
     settings.dbs_dir.mkdir(parents=True, exist_ok=True)
+    _jobs.clear()
 
     init_db()  # dbs/orrery.db — users + sessions (Tier 2, phase 1)
 
-    paper_store.load()
-
     _ocr_svc = OCRService()
     _embed_svc = EmbeddingService()
-    # One shared Chroma client for the whole process (plan §4.2/§4.4) — the
-    # legacy global `_vstore` below and every per-user `VectorStore` built by
-    # `SpaceRegistry` construct their facade from this same client, never a
-    # client per user.
+    # One shared Chroma client for the whole process (plan §4.2/§4.4). Every
+    # per-user `VectorStore` built by `SpaceRegistry` uses this same client,
+    # never a client per user.
     _chroma_client = VectorStore.build_client(settings.chroma_persist_dir)
-    _vstore = VectorStore(_chroma_client)
     _object_store = LocalObjectStore(settings.objects_dir)
-    _oracle = OracleAgent(_embed_svc, _vstore, paper_store)
-    _librarian = LibrarianAgent(_ocr_svc, _embed_svc, _vstore, _object_store, paper_store)
-    _status_agent = StatusAgent(_embed_svc, _vstore, paper_store)
-    _master = MasterAgent(_oracle, _librarian, _status_agent)
-    _curator = CuratorAgent(paper_store)
 
-    # Phase 4 wires `current_space` into routes; this phase only makes the
-    # registry available on `app.state` so that dependency has somewhere to
-    # resolve from.
     app.state.space_registry = SpaceRegistry(
         chroma_client=_chroma_client,
         object_store=_object_store,
@@ -129,22 +114,22 @@ def _stream_object(stream: BinaryIO, chunk_size: int = _UPLOAD_CHUNK_SIZE):
 # ── papers ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/papers", response_model=list[PaperRecord])
-async def list_papers():
-    return paper_store.all()
+async def list_papers(space: UserSpace = Depends(current_space)):
+    return space.papers.all()
 
 
 @app.get("/api/papers/{paper_id}/file")
-async def get_paper_file(paper_id: str):
-    record = paper_store.get(paper_id)
+async def get_paper_file(paper_id: str, space: UserSpace = Depends(current_space)):
+    record = space.papers.get(paper_id)
     if not record:
         raise HTTPException(404, "Paper not found")
 
     key = _object_key_for(paper_id)
-    stat = _object_store.stat(key)
+    stat = space.objects.stat(key)
     if stat is None:
         raise HTTPException(404, "File not found in object store")
 
-    stream = _object_store.open(key)
+    stream = space.objects.open(key)
     filename = record.source_filename or record.filename
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "paper.pdf"
     headers = {
@@ -161,50 +146,68 @@ async def get_paper_file(paper_id: str):
     )
 
 
+@app.delete("/api/papers/{paper_id}", status_code=204)
+async def delete_paper(paper_id: str, space: UserSpace = Depends(current_space)):
+    record = space.papers.get(paper_id)
+    if not record:
+        raise HTTPException(404, "Paper not found")
+
+    key = _object_key_for(paper_id)
+    space.objects.delete(key)
+    space.vstore.delete_paper(paper_id)
+    space.papers.delete(paper_id)
+    await space.papers.save()
+    return Response(status_code=204)
+
+
 # ── tree ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/tree", response_model=TreeNode)
-async def get_tree():
-    return build_tree(paper_store.as_dict())
+async def get_tree(space: UserSpace = Depends(current_space)):
+    return build_tree(space.papers.as_dict())
 
 
 # ── similarity / recommendations ────────────────────────────────────────────
 
 @app.get("/api/similarity", response_model=dict[str, list[SimilarityNeighbor]])
-async def get_similarity():
-    ids, vectors = _vstore.get_all_paper_vectors()
+async def get_similarity(space: UserSpace = Depends(current_space)):
+    ids, vectors = space.vstore.get_all_paper_vectors()
     return top_k_neighbors(ids, vectors, k=6)
 
 
 @app.get("/api/recommendations", response_model=list[Recommendation])
-async def get_recommendations():
-    return await _curator.recommend()
+async def get_recommendations(space: UserSpace = Depends(current_space)):
+    return await space.curator.recommend()
 
 
 # ── chat ───────────────────────────────────────────────────────────────────
 
 @app.patch("/api/papers/{paper_id}/status", response_model=PaperRecord)
-async def update_paper_status(paper_id: str, body: StatusUpdateRequest):
+async def update_paper_status(
+    paper_id: str,
+    body: StatusUpdateRequest,
+    space: UserSpace = Depends(current_space),
+):
     if body.status not in ("read", "toread"):
         raise HTTPException(400, "status must be 'read' or 'toread'")
-    record = paper_store.get(paper_id)
+    record = space.papers.get(paper_id)
     if not record:
         raise HTTPException(404, "Paper not found")
     if record.status == body.status:
         return record
     # No disk mutation — the tree is a pure function of records.
     record.status = body.status  # type: ignore[assignment]
-    _vstore.update_paper_status(paper_id, body.status)
-    await paper_store.save()
+    space.vstore.update_paper_status(paper_id, body.status)
+    await space.papers.save()
     return record
 
 
 @app.post("/api/chat")
-async def chat(body: ChatRequest):
+async def chat(body: ChatRequest, space: UserSpace = Depends(current_space)):
     history = [{"role": m.role, "content": m.content} for m in body.history]
 
     async def generate() -> AsyncGenerator[str, None]:
-        async for chunk in _master.run(body.message, history or None):
+        async for chunk in space.master.run(body.message, history or None):
             yield chunk
 
     return StreamingResponse(
@@ -217,7 +220,11 @@ async def chat(body: ChatRequest):
 # ── upload (two-step: POST → job_id, then GET SSE progress) ───────────────
 
 @app.post("/api/papers/upload", response_model=UploadResponse)
-async def upload_paper(file: UploadFile, status: str = Form("toread")):
+async def upload_paper(
+    file: UploadFile,
+    status: str = Form("toread"),
+    space: UserSpace = Depends(current_space),
+):
     if file.content_type != "application/pdf" and not (file.filename or "").endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported")
     if status not in ("read", "toread"):
@@ -247,7 +254,7 @@ async def upload_paper(file: UploadFile, status: str = Form("toread")):
 
         paper_id = hasher.hexdigest()[:16]
 
-        existing = paper_store.get(paper_id)
+        existing = space.papers.get(paper_id)
         if existing is not None:
             # Content-hash dedup (plan §4.3): identical bytes are a 409 with
             # the existing record, never a silent overwrite.
@@ -261,45 +268,50 @@ async def upload_paper(file: UploadFile, status: str = Form("toread")):
 
         key = _object_key_for(paper_id)
         with open(tmp_path, "rb") as spooled:
-            _object_store.put(key, spooled, max_bytes=settings.max_pdf_bytes)
+            space.objects.put(key, spooled, max_bytes=settings.max_pdf_bytes)
     finally:
         tmp_path.unlink(missing_ok=True)
 
     job_id = str(uuid.uuid4())
     queue: asyncio.Queue = asyncio.Queue()
-    _jobs[job_id] = queue
+    _jobs[job_id] = UploadJob(user_id=space.user_id, queue=queue)
 
     # Kick off ingest in background
-    asyncio.create_task(_run_ingest(paper_id, key, source_filename, status, queue))
+    asyncio.create_task(_run_ingest(space, paper_id, key, source_filename, status, queue))
 
     return UploadResponse(job_id=job_id)
 
 
 async def _run_ingest(
-    paper_id: str, key: str, source_filename: str, status: str, queue: asyncio.Queue
+    space: UserSpace,
+    paper_id: str,
+    key: str,
+    source_filename: str,
+    status: str,
+    queue: asyncio.Queue,
 ) -> None:
     def cb(step: str, pct: int) -> None:
         queue.put_nowait({"type": "progress", "step": step, "pct": pct})
 
     try:
-        record = await _librarian.ingest(paper_id, key, source_filename, status, cb)
+        record = await space.librarian.ingest(paper_id, key, source_filename, status, cb)
         queue.put_nowait({"type": "done", "paper": record.model_dump(mode="json")})
     except Exception as exc:
         # Failure hygiene (plan §9): don't leak the object if ingest blows
         # up after the bytes already landed.
-        _object_store.delete(key)
+        space.objects.delete(key)
         queue.put_nowait({"type": "error", "message": str(exc)})
 
 
 @app.post("/api/reindex")
-async def reindex():
+async def reindex(space: UserSpace = Depends(current_space)):
     async def generate() -> AsyncGenerator[str, None]:
         queue: asyncio.Queue = asyncio.Queue()
 
         def cb(step: str, pct: int) -> None:
             queue.put_nowait({"type": "progress", "step": step, "pct": pct})
 
-        task = asyncio.create_task(_run_reindex(cb, queue))
+        task = asyncio.create_task(_run_reindex(space, cb, queue))
 
         while True:
             event = await queue.get()
@@ -316,19 +328,20 @@ async def reindex():
     )
 
 
-async def _run_reindex(cb, queue: asyncio.Queue) -> None:
+async def _run_reindex(space: UserSpace, cb, queue: asyncio.Queue) -> None:
     try:
-        await _librarian.reindex(cb)
+        await space.librarian.reindex(cb)
         queue.put_nowait({"type": "done"})
     except Exception as exc:
         queue.put_nowait({"type": "error", "message": str(exc)})
 
 
 @app.get("/api/papers/upload/{job_id}/progress")
-async def upload_progress(job_id: str):
-    queue = _jobs.get(job_id)
-    if not queue:
+async def upload_progress(job_id: str, space: UserSpace = Depends(current_space)):
+    job = _jobs.get(job_id)
+    if not job or job.user_id != space.user_id:
         raise HTTPException(404, "Job not found")
+    queue = job.queue
 
     async def generate() -> AsyncGenerator[str, None]:
         while True:
