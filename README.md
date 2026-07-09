@@ -30,6 +30,12 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+Or use the Makefile:
+
+```bash
+make install-backend
+```
+
 Run the API:
 
 ```bash
@@ -47,6 +53,12 @@ npm install
 npm run dev
 ```
 
+Or use the Makefile:
+
+```bash
+make install-frontend
+```
+
 Frontend checks:
 
 ```bash
@@ -61,12 +73,15 @@ npm run build
 From the repository root:
 
 ```bash
-./start.sh
+make dev
 ```
 
 This starts the backend at `http://localhost:8000` and the frontend at `http://localhost:5173`.
 
-Warning: `start.sh` kills any process already listening on port `8000` before starting the backend.
+Start only one side with `make dev SERVICE=backend` or `make dev SERVICE=frontend`.
+Use `V=1` for verbose command stdout, for example `make lint V=1`.
+
+Warning: `make dev` kills any process already listening on port `8000` before starting the backend.
 
 ## Data And Runtime Files
 

@@ -72,15 +72,17 @@ npm run build
 
 ## Full Local Development
 
-The helper script starts both backend and frontend:
+The Makefile starts both backend and frontend:
 
 ```bash
-./start.sh
+make dev
 ```
 
-The script starts the backend on `http://localhost:8000` and the frontend on `http://localhost:5173`.
+The recipe starts the backend on `http://localhost:8000` and the frontend on `http://localhost:5173`.
 
-Warning: `start.sh` kills any process already listening on port `8000` before starting the backend.
+Use `make dev SERVICE=backend` or `make dev SERVICE=frontend` to start only one side.
+
+Warning: `make dev` kills any process already listening on port `8000` before starting the backend.
 
 ## Backend Conventions
 

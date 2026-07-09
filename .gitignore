@@ -8,6 +8,8 @@ dbs/papers.json
 dbs/output/
 dbs/input/*.pdf
 bulk_ingest_errors.jsonl
+.backend.dev.log
+.frontend.dev.log
 frontend/node_modules/
 frontend/dist/
 .DS_Store
