@@ -97,12 +97,12 @@ class FilesystemService:
     # ── tree JSON ──────────────────────────────────────────────────────────
 
     def get_tree_json(self, records: dict[str, PaperRecord]) -> TreeNode:
-        name_to_id = {r.symlink_name: pid for pid, r in records.items() if r.symlink_name}
-        root = self._walk_dir(self._output_dir, name_to_id)
+        name_to_record = {r.symlink_name: r for r in records.values() if r.symlink_name}
+        root = self._walk_dir(self._output_dir, name_to_record)
         root.name = "library"
         return root
 
-    def _walk_dir(self, path: Path, name_to_id: dict[str, str]) -> TreeNode:
+    def _walk_dir(self, path: Path, name_to_record: dict[str, PaperRecord]) -> TreeNode:
         children: list[TreeNode] = []
         try:
             entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
@@ -113,19 +113,19 @@ class FilesystemService:
             if entry.name.startswith("."):
                 continue
             if entry.is_dir() and not entry.is_symlink():
-                children.append(self._walk_dir(entry, name_to_id))
+                children.append(self._walk_dir(entry, name_to_record))
             elif entry.is_symlink() and entry.suffix == ".pdf":
-                pid = name_to_id.get(entry.name)
-                record = None
-                if pid:
-                    from backend.store import paper_store
-                    record = paper_store.get(pid)
+                record = name_to_record.get(entry.name)
                 children.append(
                     TreeNode(
                         name=entry.name,
                         type="paper",
-                        paper_id=pid,
+                        paper_id=record.id if record else None,
                         status=record.status if record else None,
+                        title=record.title if record else None,
+                        author=record.author if record else None,
+                        year=record.year if record else None,
+                        filename=record.filename if record else entry.name,
                     )
                 )
         return TreeNode(name=path.name, type="folder", children=children)

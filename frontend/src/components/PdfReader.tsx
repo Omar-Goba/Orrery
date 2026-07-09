@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { Document, Page, pdfjs } from "react-pdf";
+import "react-pdf/dist/Page/TextLayer.css";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { PaperRecord } from "../api/client";
 import { getPaperUrl } from "../api/client";
@@ -97,6 +98,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
         <div className="flex items-center gap-2 px-3 py-2.5">
           <button
             onClick={onClose}
+            aria-label="Close reader"
             className="shrink-0 rounded-lg p-1.5 text-muted transition-colors hover:bg-rim hover:text-ink"
             title="Close reader"
           >
@@ -112,6 +114,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
 
           <button
             onClick={() => onToggleStatus?.(paper, nextStatus)}
+            aria-label={isRead ? "Mark as to-read" : "Mark as read"}
             className={clsx(
               "hidden shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors sm:inline-flex",
               isRead
@@ -128,6 +131,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
             href={fileUrl}
             target="_blank"
             rel="noreferrer"
+            aria-label="Open PDF in new tab"
             className="shrink-0 rounded-lg p-1.5 text-muted transition-colors hover:bg-rim hover:text-cyan-400"
             title="Open PDF in new tab"
           >
@@ -139,6 +143,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
           <button
             onClick={goPrev}
             disabled={pageNumber <= 1}
+            aria-label="Previous page"
             className="rounded-lg border border-rim bg-card px-2 py-1 text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-35"
             title="Previous page"
           >
@@ -150,6 +155,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
           <button
             onClick={goNext}
             disabled={!!pageCount && pageNumber >= pageCount}
+            aria-label="Next page"
             className="rounded-lg border border-rim bg-card px-2 py-1 text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-35"
             title="Next page"
           >
@@ -160,6 +166,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
 
           <button
             onClick={zoomOut}
+            aria-label="Zoom out"
             className="rounded-lg border border-rim bg-card px-2 py-1 text-muted transition-colors hover:text-ink"
             title="Zoom out"
           >
@@ -167,6 +174,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
           </button>
           <button
             onClick={resetZoom}
+            aria-label="Reset zoom"
             className="min-w-14 rounded-lg border border-rim bg-card px-2 py-1 text-[11px] tabular-nums text-muted transition-colors hover:text-ink"
             title="Reset zoom"
           >
@@ -174,6 +182,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
           </button>
           <button
             onClick={zoomIn}
+            aria-label="Zoom in"
             className="rounded-lg border border-rim bg-card px-2 py-1 text-muted transition-colors hover:text-ink"
             title="Zoom in"
           >
@@ -181,6 +190,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
           </button>
           <button
             onClick={rotate}
+            aria-label="Rotate PDF"
             className="rounded-lg border border-rim bg-card px-2 py-1 text-muted transition-colors hover:text-ink"
             title="Rotate"
           >
@@ -189,7 +199,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
         </div>
       </header>
 
-      <div className="flex-1 overflow-auto bg-[#05070b]">
+      <div className="flex-1 overflow-auto bg-[#05070b] select-text">
         <Document
           key={paper.id}
           file={fileUrl}
@@ -210,7 +220,7 @@ export function PdfReader({ paper, mode, onClose, onToggleStatus }: PdfReaderPro
                 scale={scale}
                 rotate={rotation}
                 renderAnnotationLayer={false}
-                renderTextLayer={false}
+                renderTextLayer
                 className="overflow-hidden rounded-lg bg-white shadow-panel"
               />
             </div>

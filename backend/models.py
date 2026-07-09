@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 PaperStatus = Literal["read", "toread"]
@@ -55,7 +55,11 @@ class TreeNode(BaseModel):
     type: Literal["folder", "paper"]
     paper_id: str | None = None
     status: PaperStatus | None = None
-    children: list[TreeNode] = []
+    title: str | None = None
+    author: str | None = None
+    year: str | None = None
+    filename: str | None = None
+    children: list[TreeNode] = Field(default_factory=list)
 
 
 class UploadResponse(BaseModel):
@@ -68,3 +72,17 @@ class ProgressEvent(BaseModel):
     pct: int | None = None
     paper: PaperRecord | None = None
     message: str | None = None
+
+
+class SimilarityNeighbor(BaseModel):
+    id: str
+    score: float
+
+
+class Recommendation(BaseModel):
+    paper_id: str
+    title: str
+    author: str | None = None
+    year: str | None = None
+    cluster_path: str | None = None
+    reason: str

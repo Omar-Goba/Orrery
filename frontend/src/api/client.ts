@@ -25,8 +25,12 @@ export interface Citation {
 export interface TreeNode {
   name: string;
   type: "folder" | "paper";
-  paper_id?: string;
-  status?: "read" | "toread";
+  paper_id?: string | null;
+  status?: "read" | "toread" | null;
+  title?: string | null;
+  author?: string | null;
+  year?: string | null;
+  filename?: string | null;
   children?: TreeNode[];
 }
 
@@ -79,6 +83,33 @@ export const listPapers = (): Promise<PaperRecord[]> =>
 
 export const getTree = (): Promise<TreeNode> =>
   fetch(`${BASE}/api/tree`).then((r) => r.json());
+
+// ── Similarity graph (real embedding-space nearest neighbors) ───────────────
+export interface SimilarityNeighbor {
+  id: string;
+  /** Cosine similarity in [0, 1] — higher means more similar. */
+  score: number;
+}
+
+/** Map of paper_id -> its top-k nearest neighbors by embedding similarity. */
+export type SimilarityGraph = Record<string, SimilarityNeighbor[]>;
+
+export const getSimilarityGraph = (): Promise<SimilarityGraph> =>
+  fetch(`${BASE}/api/similarity`).then((r) => r.json());
+
+// ── "What should I read next" recommendations ───────────────────────────────
+export interface Recommendation {
+  paper_id: string;
+  title: string;
+  author: string | null;
+  year: string | null;
+  cluster_path: string | null;
+  /** One-sentence, human-readable reason this paper was picked. */
+  reason: string;
+}
+
+export const getRecommendations = (): Promise<Recommendation[]> =>
+  fetch(`${BASE}/api/recommendations`).then((r) => r.json());
 
 export const getPaperUrl = (paperId: string) =>
   `${BASE}/api/papers/${paperId}/file`;

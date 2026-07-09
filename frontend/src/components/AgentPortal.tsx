@@ -1,8 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Bot, Search, Send, Paperclip, X, FileText, Sparkles,
+  Bot, Search, Send, Paperclip, X, FileText, FileUp, Sparkles,
+  ChevronDown, MessageSquare,
 } from "lucide-react";
 import clsx from "clsx";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Citation, PaperRecord, SSEEvent } from "../api/client";
 import { getPaperUrl, streamChat, uploadPaper } from "../api/client";
 
@@ -27,13 +30,29 @@ export function AgentPortal({
   onUploadDone,
   onOpenPaper,
   onOpenPaperId,
+  onCitations,
+  onUploadStart,
+  onUploadArrive,
+  onUploadCancel,
   hideHeader = false,
+  variant = "panel",
 }: {
   onUploadDone?: () => void;
   onOpenPaper?: (paper: PaperRecord) => void;
   onOpenPaperId?: (paperId: string) => void;
+  /** Fired with cited paper ids as soon as the Oracle's citations arrive. */
+  onCitations?: (paperIds: string[]) => void;
+  /** Fired the moment an upload begins (cluster not known yet). */
+  onUploadStart?: () => void;
+  /** Fired once the paper's final cluster_path is known. */
+  onUploadArrive?: (clusterPath: string) => void;
+  /** Fired if an upload fails before a cluster was resolved. */
+  onUploadCancel?: () => void;
   hideHeader?: boolean;
+  /** "panel" = classic full-height column; "float" = omnibar + expandable glass sheet. */
+  variant?: "panel" | "float";
 }) {
+  const isFloat = variant === "float";
   const [msgs, setMsgs] = useState<Msg[]>([
     {
       id: "0",
@@ -45,9 +64,66 @@ export function AgentPortal({
   const [busy, setBusy]           = useState(false);
   const [pendingFile, setPending]  = useState<File | null>(null);
   const [uploadStatus, setUpStat] = useState<"read" | "toread">("toread");
+  const [open, setOpen]           = useState(false);
+  const [dragging, setDragging]   = useState(false);
   const bottomRef  = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
+  const inputRef   = useRef<HTMLInputElement>(null);
   const abortRef   = useRef<(() => void) | null>(null);
+
+  // ── Float-only: ⌘K / "/" focuses the omnibar ──────────────────────────────
+  useEffect(() => {
+    if (!isFloat) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing =
+        t?.tagName === "INPUT" || t?.tagName === "TEXTAREA" || t?.isContentEditable;
+      if (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") || (e.key === "/" && !typing)) {
+        e.preventDefault();
+        setOpen(true);
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isFloat]);
+
+  // ── Float-only: drop a PDF anywhere on the window to ingest it ────────────
+  useEffect(() => {
+    if (!isFloat) return;
+    let depth = 0;
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    const onEnter = (e: DragEvent) => { if (hasFiles(e)) { depth++; setDragging(true); } };
+    const onOver  = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
+    const onLeave = () => { depth = Math.max(0, depth - 1); if (depth === 0) setDragging(false); };
+    const onDrop  = (e: DragEvent) => {
+      depth = 0;
+      setDragging(false);
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      const f = e.dataTransfer?.files?.[0];
+      if (f && /\.pdf$/i.test(f.name)) {
+        setPending(f);
+        setOpen(true);
+      }
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [isFloat]);
+
+  // Keep the transcript pinned to the latest message when the sheet opens
+  useEffect(() => {
+    if (open) bottomRef.current?.scrollIntoView();
+  }, [open]);
 
   const scrollDown = () =>
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
@@ -66,6 +142,7 @@ export function AgentPortal({
     if (!text || busy) return;
     setInput("");
     setBusy(true);
+    setOpen(true);
 
     append({ id: uid(), role: "user", content: text });
 
@@ -101,6 +178,7 @@ export function AgentPortal({
 
       } else if (ev.type === "citations") {
         patchById(aId, m => ({ ...m, citations: ev.papers, streaming: false }));
+        if (ev.papers.length) onCitations?.(ev.papers.map(c => c.paper_id));
         setBusy(false);
 
       } else if (ev.type === "done") {
@@ -129,6 +207,8 @@ export function AgentPortal({
     const status = uploadStatus;
     setPending(null);
     setBusy(true);
+    setOpen(true);
+    onUploadStart?.();
 
     const pId = uid();
     append({
@@ -157,11 +237,13 @@ export function AgentPortal({
               (p.cluster_path ?? "library").replace("/", " › ")
             }_.`,
           }));
+          onUploadArrive?.(p.cluster_path ?? "");
           onUploadDone?.();
         }
         scrollDown();
       });
     } catch {
+      onUploadCancel?.();
       patchById(pId, m => ({
         ...m,
         streaming: false,
@@ -173,6 +255,200 @@ export function AgentPortal({
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
+  const messageCount = msgs.filter(m => m.role !== "system").length;
+
+  const messages = (
+    <>
+      {msgs.map(m => (
+        <MsgBubble
+          key={m.id}
+          msg={m}
+          onOpenPaper={onOpenPaper}
+          onOpenPaperId={onOpenPaperId}
+        />
+      ))}
+      <div ref={bottomRef} />
+    </>
+  );
+
+  const pendingBar = pendingFile && (
+    <div
+      className={clsx(
+        "flex items-center gap-2.5 px-3 py-2.5 border border-rim rounded-xl",
+        isFloat ? "glass w-full animate-fade-up" : "shrink-0 mx-3 mb-2 bg-card"
+      )}
+    >
+      <FileText size={13} className="shrink-0 text-cyan-400" />
+      <span className="flex-1 text-xs text-zinc-300 truncate">{pendingFile.name}</span>
+      <div className="shrink-0 flex rounded-md overflow-hidden border border-rim text-[11px] font-medium">
+        <button
+          onClick={() => setUpStat("toread")}
+          className={clsx(
+            "px-2 py-0.5 transition-colors",
+            uploadStatus === "toread"
+              ? "bg-amber-500/20 text-amber-400"
+              : "text-muted hover:text-ink"
+          )}
+        >
+          to-read
+        </button>
+        <button
+          onClick={() => setUpStat("read")}
+          className={clsx(
+            "px-2 py-0.5 border-l border-rim transition-colors",
+            uploadStatus === "read"
+              ? "bg-emerald-500/20 text-emerald-400"
+              : "text-muted hover:text-ink"
+          )}
+        >
+          read
+        </button>
+      </div>
+      <button
+        onClick={doUpload}
+        className="shrink-0 px-3 py-0.5 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 text-[11px] font-semibold rounded-md transition-colors"
+      >
+        Ingest
+      </button>
+      <button
+        onClick={() => setPending(null)}
+        aria-label="Remove pending upload"
+        className="shrink-0 text-muted hover:text-ink"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
+
+  const inputBar = (
+    <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".pdf"
+        className="hidden"
+        onChange={e => {
+          const f = e.target.files?.[0];
+          if (f) setPending(f);
+          e.target.value = "";
+        }}
+      />
+      <div
+        className={clsx(
+          "flex items-center gap-2 border rounded-2xl transition-all",
+          isFloat
+            ? "glass px-3.5 py-3 shadow-panel focus-within:border-cyan-400/40 focus-within:shadow-glow"
+            : "bg-card px-3 py-2.5 border-rim hover:border-wire focus-within:border-cyan-500/40"
+        )}
+      >
+        {isFloat && (
+          <button
+            onClick={() => setOpen(o => !o)}
+            aria-label={open ? "Collapse conversation" : "Expand conversation"}
+            title={open ? "Collapse conversation" : "Expand conversation"}
+            className="relative shrink-0 rounded-lg p-1.5 text-muted hover:text-cyan-400 transition-colors"
+          >
+            <MessageSquare size={15} />
+            {!open && messageCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-cyan-400 px-1 text-[8px] font-bold text-bg tabular-nums">
+                {messageCount}
+              </span>
+            )}
+          </button>
+        )}
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+          aria-label="Upload a PDF"
+          title="Upload a PDF"
+          className="shrink-0 inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-muted hover:text-cyan-400 transition-colors disabled:opacity-40"
+        >
+          <Paperclip size={15} />
+          {!isFloat && <span className="hidden xl:inline text-[11px] font-semibold">Upload PDF</span>}
+        </button>
+        <input
+          ref={inputRef}
+          className="flex-1 bg-transparent text-sm text-ink placeholder-muted outline-none"
+          placeholder={isFloat ? "Ask, find, or drop a PDF anywhere…" : "Ask a question or search your library…"}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+            if (e.key === "Escape" && isFloat) setOpen(false);
+          }}
+          disabled={busy}
+        />
+        {isFloat && !input && (
+          <kbd className="hidden md:inline shrink-0 rounded border border-rim px-1.5 py-0.5 font-mono text-[10px] text-muted">
+            ⌘K
+          </kbd>
+        )}
+        <button
+          onClick={send}
+          disabled={busy || !input.trim()}
+          aria-label="Send message"
+          className={clsx(
+            "shrink-0 p-1.5 rounded-xl transition-all",
+            input.trim() && !busy
+              ? "bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 shadow-glow"
+              : "text-wire cursor-not-allowed"
+          )}
+        >
+          {busy ? (
+            <div className="w-4 h-4 border-2 border-wire border-t-cyan-400 rounded-full animate-spin-slow" />
+          ) : (
+            <Send size={14} />
+          )}
+        </button>
+      </div>
+    </>
+  );
+
+  // ── Float variant: omnibar + expandable glass sheet ───────────────────────
+  if (isFloat) {
+    return (
+      <>
+        {dragging && (
+          <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-bg/70 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-3 rounded-3xl border-2 border-dashed border-cyan-400/40 bg-cyan-500/5 px-14 py-10">
+              <FileUp size={28} className="text-cyan-400" />
+              <p className="text-sm font-medium text-ink">Drop PDF to add it to the library</p>
+            </div>
+          </div>
+        )}
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex flex-col items-center gap-2.5 px-4 pb-5">
+          {open && (
+            <section className="pointer-events-auto flex max-h-[56dvh] w-full max-w-[680px] flex-col overflow-hidden rounded-2xl glass shadow-panel animate-fade-up">
+              <header className="flex shrink-0 items-center gap-2.5 border-b border-rim/60 px-4 py-3">
+                <Sparkles size={14} className="text-cyan-400" />
+                <span className="text-[13px] font-semibold tracking-tight text-ink">Agent Portal</span>
+                <span className="ml-auto font-mono text-[10px] text-muted">oracle · librarian</span>
+                <button
+                  onClick={() => setOpen(false)}
+                  aria-label="Collapse conversation"
+                  className="rounded-lg p-1 text-muted transition-colors hover:bg-rim hover:text-ink"
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </header>
+              <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+                {messages}
+              </div>
+            </section>
+          )}
+
+          {pendingBar && (
+            <div className="pointer-events-auto w-full max-w-[680px]">{pendingBar}</div>
+          )}
+
+          <div className="pointer-events-auto w-full max-w-[680px]">{inputBar}</div>
+        </div>
+      </>
+    );
+  }
+
+  // ── Panel variant: classic full-height column ─────────────────────────────
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header — hidden on mobile (App already provides one) */}
@@ -186,112 +462,14 @@ export function AgentPortal({
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
-        {msgs.map(m => (
-          <MsgBubble
-            key={m.id}
-            msg={m}
-            onOpenPaper={onOpenPaper}
-            onOpenPaperId={onOpenPaperId}
-          />
-        ))}
-        <div ref={bottomRef} />
+        {messages}
       </div>
 
-      {/* Pending file bar */}
-      {pendingFile && (
-        <div className="shrink-0 mx-3 mb-2 px-3 py-2.5 bg-card border border-rim rounded-xl flex items-center gap-2.5">
-          <FileText size={13} className="shrink-0 text-cyan-400" />
-          <span className="flex-1 text-xs text-zinc-300 truncate">{pendingFile.name}</span>
-          <div className="shrink-0 flex rounded-md overflow-hidden border border-rim text-[11px] font-medium">
-            <button
-              onClick={() => setUpStat("toread")}
-              className={clsx(
-                "px-2 py-0.5 transition-colors",
-                uploadStatus === "toread"
-                  ? "bg-amber-500/20 text-amber-400"
-                  : "text-muted hover:text-ink"
-              )}
-            >
-              to-read
-            </button>
-            <button
-              onClick={() => setUpStat("read")}
-              className={clsx(
-                "px-2 py-0.5 border-l border-rim transition-colors",
-                uploadStatus === "read"
-                  ? "bg-emerald-500/20 text-emerald-400"
-                  : "text-muted hover:text-ink"
-              )}
-            >
-              read
-            </button>
-          </div>
-          <button
-            onClick={doUpload}
-            className="shrink-0 px-3 py-0.5 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 text-[11px] font-semibold rounded-md transition-colors"
-          >
-            Ingest
-          </button>
-          <button onClick={() => setPending(null)} className="shrink-0 text-muted hover:text-ink">
-            <X size={13} />
-          </button>
-        </div>
-      )}
+      {pendingBar}
 
       {/* Input bar */}
       <div className="shrink-0 px-3 pb-3">
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".pdf"
-          className="hidden"
-          onChange={e => {
-            const f = e.target.files?.[0];
-            if (f) setPending(f);
-            e.target.value = "";
-          }}
-        />
-        <div
-          className={clsx(
-            "flex items-center gap-2 bg-card border rounded-2xl px-3 py-2.5 transition-colors",
-            busy ? "border-rim" : "border-rim hover:border-wire focus-within:border-cyan-500/40"
-          )}
-        >
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={busy}
-            title="Upload a PDF"
-            className="shrink-0 p-1 text-muted hover:text-cyan-400 transition-colors disabled:opacity-40"
-          >
-            <Paperclip size={15} />
-          </button>
-          <input
-            className="flex-1 bg-transparent text-[13px] text-ink placeholder-muted outline-none"
-            placeholder="Ask, find, or upload a paper…"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-            }}
-            disabled={busy}
-          />
-          <button
-            onClick={send}
-            disabled={busy || !input.trim()}
-            className={clsx(
-              "shrink-0 p-1.5 rounded-xl transition-all",
-              input.trim() && !busy
-                ? "bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 shadow-glow"
-                : "text-wire cursor-not-allowed"
-            )}
-          >
-            {busy ? (
-              <div className="w-4 h-4 border-2 border-wire border-t-cyan-400 rounded-full animate-spin-slow" />
-            ) : (
-              <Send size={14} />
-            )}
-          </button>
-        </div>
+        {inputBar}
       </div>
     </div>
   );
@@ -318,7 +496,7 @@ function MsgBubble({
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[88%] bg-indigo-600/20 border border-indigo-500/20 text-[13px] text-ink leading-relaxed rounded-2xl rounded-tr-sm px-3.5 py-2.5">
+        <div className="max-w-[88%] bg-indigo-600/20 border border-indigo-500/20 text-sm text-ink leading-relaxed rounded-2xl rounded-tr-sm px-3.5 py-2.5">
           {msg.content}
         </div>
       </div>
@@ -384,11 +562,11 @@ function MsgBubble({
         {msg.content && (
           <div
             className={clsx(
-              "text-[13px] text-zinc-200 leading-relaxed whitespace-pre-wrap rounded-xl px-3.5 py-2.5 border",
+              "text-sm text-zinc-200 leading-relaxed rounded-xl px-3.5 py-2.5 border",
               bg, border
             )}
           >
-            <span dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+            <MarkdownMessage content={msg.content} />
             {msg.streaming && <span className="typing-cursor" />}
           </div>
         )}
@@ -504,11 +682,58 @@ function CitationChip({ c, onOpenPaperId }: { c: Citation; onOpenPaperId?: (pape
   );
 }
 
-// ── Minimal markdown renderer (bold + italic only) ───────────────────────────
-function renderMarkdown(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/_(.+?)_/g, "<em>$1</em>");
+const markdownComponents: Components = {
+  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+  strong: ({ children }) => <strong className="font-semibold text-ink">{children}</strong>,
+  em: ({ children }) => <em className="text-zinc-300">{children}</em>,
+  ul: ({ children }) => <ul className="my-2 ml-4 list-disc space-y-1">{children}</ul>,
+  ol: ({ children }) => <ol className="my-2 ml-4 list-decimal space-y-1">{children}</ol>,
+  li: ({ children }) => <li className="pl-1">{children}</li>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-2 border-l-2 border-violet-400/40 pl-3 text-zinc-300">
+      {children}
+    </blockquote>
+  ),
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-cyan-300 underline decoration-cyan-400/40 underline-offset-2 hover:text-cyan-200"
+    >
+      {children}
+    </a>
+  ),
+  code: ({ children }) => (
+    <code className="rounded bg-rim/70 px-1 py-0.5 font-mono text-[12px] text-cyan-200">
+      {children}
+    </code>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded-lg border border-rim bg-bg/70 p-2 text-[12px] leading-relaxed">
+      {children}
+    </pre>
+  ),
+  table: ({ children }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="min-w-full border-collapse text-[12px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-rim bg-rim/40 px-2 py-1 text-left font-semibold text-ink">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-rim px-2 py-1 text-zinc-300">{children}</td>
+  ),
+  img: () => null,
+};
+
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
 }

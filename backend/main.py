@@ -11,15 +11,25 @@ from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
+from backend.agents.curator import CuratorAgent
 from backend.agents.librarian import LibrarianAgent
 from backend.agents.master import MasterAgent
 from backend.agents.oracle import OracleAgent
 from backend.agents.status import StatusAgent
 from backend.config import settings
-from backend.models import ChatRequest, PaperRecord, StatusUpdateRequest, TreeNode, UploadResponse
+from backend.models import (
+    ChatRequest,
+    PaperRecord,
+    Recommendation,
+    SimilarityNeighbor,
+    StatusUpdateRequest,
+    TreeNode,
+    UploadResponse,
+)
 from backend.services.embeddings import EmbeddingService
 from backend.services.filesystem import FilesystemService
 from backend.services.ocr import OCRService
+from backend.services.similarity import top_k_neighbors
 from backend.services.vectorstore import VectorStore
 from backend.store import paper_store
 
@@ -32,6 +42,7 @@ _oracle: OracleAgent
 _librarian: LibrarianAgent
 _status_agent: StatusAgent
 _master: MasterAgent
+_curator: CuratorAgent
 
 # in-memory job registry  {job_id: asyncio.Queue}
 _jobs: dict[str, asyncio.Queue] = {}
@@ -39,7 +50,7 @@ _jobs: dict[str, asyncio.Queue] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _ocr_svc, _embed_svc, _vstore, _fs_svc, _oracle, _librarian, _status_agent, _master
+    global _ocr_svc, _embed_svc, _vstore, _fs_svc, _oracle, _librarian, _status_agent, _master, _curator
     settings.dbs_dir.mkdir(parents=True, exist_ok=True)
     settings.input_dir.mkdir(parents=True, exist_ok=True)
     settings.output_dir.mkdir(parents=True, exist_ok=True)
@@ -54,6 +65,7 @@ async def lifespan(app: FastAPI):
     _librarian = LibrarianAgent(_ocr_svc, _embed_svc, _vstore, _fs_svc)
     _status_agent = StatusAgent(_embed_svc, _vstore, _fs_svc)
     _master = MasterAgent(_oracle, _librarian, _status_agent)
+    _curator = CuratorAgent()
     yield
 
 
@@ -100,6 +112,19 @@ async def get_paper_file(paper_id: str):
 @app.get("/api/tree", response_model=TreeNode)
 async def get_tree():
     return _fs_svc.get_tree_json(paper_store.as_dict())
+
+
+# ── similarity / recommendations ────────────────────────────────────────────
+
+@app.get("/api/similarity", response_model=dict[str, list[SimilarityNeighbor]])
+async def get_similarity():
+    ids, vectors = _vstore.get_all_paper_vectors()
+    return top_k_neighbors(ids, vectors, k=6)
+
+
+@app.get("/api/recommendations", response_model=list[Recommendation])
+async def get_recommendations():
+    return await _curator.recommend()
 
 
 # ── chat ───────────────────────────────────────────────────────────────────
