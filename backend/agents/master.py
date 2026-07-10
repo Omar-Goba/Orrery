@@ -2,9 +2,8 @@ from __future__ import annotations
 import json
 from typing import AsyncGenerator
 
-from openai import AsyncOpenAI
-
 from backend.config import settings
+from backend.services.llm import client_for_role
 
 TOOLS = [
     {
@@ -86,7 +85,8 @@ SYSTEM = (
 
 class MasterAgent:
     def __init__(self, oracle, librarian, status_agent) -> None:
-        self._client  = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._client  = client_for_role(settings.llm_master)
+        self._model   = settings.llm_master.model
         self._oracle  = oracle
         self._lib     = librarian
         self._status  = status_agent
@@ -102,7 +102,7 @@ class MasterAgent:
         messages.append({"role": "user", "content": message})
 
         resp = await self._client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=self._model,
             messages=messages,
             tools=TOOLS,
             tool_choice="required",

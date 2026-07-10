@@ -2,10 +2,9 @@ from __future__ import annotations
 import json
 from collections import Counter
 
-from openai import AsyncOpenAI
-
 from backend.config import settings
 from backend.models import PaperRecord, Recommendation
+from backend.services.llm import client_for_role
 from backend.store import PaperStore
 
 SYSTEM_PROMPT = """\
@@ -20,7 +19,8 @@ Respond with strict JSON only, in this exact shape:
 
 class CuratorAgent:
     def __init__(self, paper_store: PaperStore) -> None:
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._client = client_for_role(settings.llm_curator)
+        self._model = settings.llm_curator.model
         self._papers = paper_store
 
     async def recommend(self) -> list[Recommendation]:
@@ -38,7 +38,7 @@ class CuratorAgent:
         ]
 
         resp = await self._client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=self._model,
             messages=messages,
             temperature=0.4,
             response_format={"type": "json_object"},

@@ -3,12 +3,10 @@ import json
 import re
 from collections.abc import Mapping
 
-import httpx
-from openai import AsyncOpenAI
-
 from backend.clustering.hierarchical import ClusterNode, ClusterTree
 from backend.config import settings
 from backend.models import PaperRecord
+from backend.services.llm import client_for_role
 
 _PROMPT_TEMPLATE = """\
 You are a file system organizer. Given a list of research paper titles, \
@@ -22,8 +20,8 @@ Folder name (Title Case words only, nothing else):"""
 
 class ClusterNamer:
     def __init__(self) -> None:
-        self._base = settings.ollama_base_url
-        self._model = settings.ollama_namer_model
+        self._client = client_for_role(settings.llm_namer)
+        self._model = settings.llm_namer.model
 
     async def name_cluster(self, paper_summaries: list[str]) -> str:
         if not paper_summaries:
@@ -31,14 +29,13 @@ class ClusterNamer:
         titles = "\n".join(f"- {s[:120]}" for s in paper_summaries[:12])
         prompt = _PROMPT_TEMPLATE.format(titles=titles)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{self._base}/api/generate",
-                    json={"model": self._model, "prompt": prompt, "stream": False},
-                )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "")
-                return self._sanitize(raw)
+            resp = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+            )
+            raw = resp.choices[0].message.content or ""
+            return self._sanitize(raw)
         except Exception:
             return self._sanitize(paper_summaries[0])
 
@@ -52,12 +49,12 @@ class ClusterNamer:
         target_ids = [node_id for node_id in nodes if node_id not in misc_ids]
 
         names: dict[str, str] = {}
-        if target_ids and settings.openai_api_key:
-            names = await self._name_tree_openai(tree, records, target_ids)
+        if target_ids:
+            names = await self._name_tree_llm(tree, records, target_ids)
 
         invalid = self._invalid_name_ids(tree, nodes, names, target_ids)
-        if invalid and settings.openai_api_key:
-            repaired = await self._repair_names_openai(tree, records, names, invalid)
+        if invalid:
+            repaired = await self._repair_names_llm(tree, records, names, invalid)
             names.update(repaired)
             invalid = self._invalid_name_ids(tree, nodes, names, target_ids)
 
@@ -71,7 +68,7 @@ class ClusterNamer:
 
         self._dedupe_siblings(tree)
 
-    async def _name_tree_openai(
+    async def _name_tree_llm(
         self,
         tree: ClusterTree,
         records: Mapping[str, PaperRecord],
@@ -79,9 +76,8 @@ class ClusterNamer:
     ) -> dict[str, str]:
         prompt = self._tree_prompt(tree, records, target_ids)
         try:
-            client = AsyncOpenAI(api_key=settings.openai_api_key)
-            resp = await client.chat.completions.create(
-                model=settings.namer_model,
+            resp = await self._client.chat.completions.create(
+                model=self._model,
                 messages=[
                     {"role": "system", "content": _TREE_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
@@ -94,7 +90,7 @@ class ClusterNamer:
         except Exception:
             return {}
 
-    async def _repair_names_openai(
+    async def _repair_names_llm(
         self,
         tree: ClusterTree,
         records: Mapping[str, PaperRecord],
@@ -110,9 +106,8 @@ class ClusterNamer:
             f"{prompt}"
         )
         try:
-            client = AsyncOpenAI(api_key=settings.openai_api_key)
-            resp = await client.chat.completions.create(
-                model=settings.namer_model,
+            resp = await self._client.chat.completions.create(
+                model=self._model,
                 messages=[
                     {"role": "system", "content": _TREE_SYSTEM_PROMPT},
                     {"role": "user", "content": repair_prompt},

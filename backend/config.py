@@ -1,21 +1,44 @@
 from pathlib import Path
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class RoleConfig(BaseModel):
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""
+    model: str = ""
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        env_nested_delimiter="__",
     )
 
-    openai_api_key: str = ""
     mistral_api_key: str = ""
-    summary_model: str = "gpt-4o-mini"
-    namer_model: str = "gpt-4o-mini"
-
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_embed_model: str = "mxbai-embed-large"
-    ollama_namer_model: str = "gemma3:4b"
+    llm_summary: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_namer: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_embedder: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(
+            base_url="http://localhost:11434/v1",
+            model="mxbai-embed-large",
+        )
+    )
+    llm_oracle: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_curator: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_master: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
 
     dbs_dir: Path = Path("./dbs")
     chroma_persist_dir: Path = Path("./dbs/chroma")

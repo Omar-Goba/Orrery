@@ -3,11 +3,10 @@ import json
 import re
 from typing import AsyncGenerator
 
-from openai import AsyncOpenAI
-
 from backend.config import settings
 from backend.models import Citation, PaperRecord
 from backend.services.embeddings import EmbeddingService
+from backend.services.llm import client_for_role
 from backend.services.vectorstore import VectorStore
 from backend.store import PaperStore
 
@@ -26,7 +25,8 @@ class OracleAgent:
         vstore: VectorStore,
         paper_store: PaperStore,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._client = client_for_role(settings.llm_oracle)
+        self._model = settings.llm_oracle.model
         self._embed = embed_svc
         self._vstore = vstore
         self._papers = paper_store
@@ -43,7 +43,7 @@ class OracleAgent:
 
         full_response = ""
         async with self._client.chat.completions.stream(
-            model="gpt-4o-mini",
+            model=self._model,
             messages=messages,
             temperature=0.3,
         ) as stream:

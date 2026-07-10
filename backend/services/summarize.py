@@ -6,10 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
-from openai import AsyncOpenAI
-
 from backend.config import settings
+from backend.services.llm import client_for_role
 
 MAX_CHARS = 2000
 OVERLAP_CHARS = 150
@@ -78,22 +76,17 @@ class SummaryService:
         front = front_matter_text(text)
         heuristic = _heuristic_result(front or text, filename)
 
-        if settings.openai_api_key:
-            result = await self._summarize_openai(front, filename)
-            if result:
-                return result
-
-        result = await self._summarize_ollama(front, filename)
+        result = await self._summarize_llm(front, filename)
         if result:
             return result
 
         return heuristic
 
-    async def _summarize_openai(self, text: str, filename: str) -> SummaryResult | None:
+    async def _summarize_llm(self, text: str, filename: str) -> SummaryResult | None:
         try:
-            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            client = client_for_role(settings.llm_summary)
             resp = await client.chat.completions.create(
-                model=settings.summary_model,
+                model=settings.llm_summary.model,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": _user_prompt(text, filename)},
@@ -102,27 +95,9 @@ class SummaryService:
                 response_format={"type": "json_object"},
             )
             content = resp.choices[0].message.content or "{}"
-            return _parse_model_result(content, "openai")
+            return _parse_model_result(content, "llm_summary")
         except Exception:
-            return None
-
-    async def _summarize_ollama(self, text: str, filename: str) -> SummaryResult | None:
-        prompt = f"{_SYSTEM_PROMPT}\n\n{_user_prompt(text, filename)}"
-        try:
-            async with httpx.AsyncClient(timeout=45) as client:
-                resp = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_namer_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
-                )
-                resp.raise_for_status()
-                content = resp.json().get("response", "{}")
-                return _parse_model_result(content, "ollama")
-        except Exception:
+            # TODO(logging): log llm_summary endpoint/model failure before heuristic fallback.
             return None
 
 

@@ -2,17 +2,17 @@ from __future__ import annotations
 import asyncio
 
 import numpy as np
-import ollama
 
 from backend.config import settings
+from backend.services.llm import client_for_role
 
 EXPECTED_DIM = 1024
 
 
 class EmbeddingService:
     def __init__(self) -> None:
-        self._client = ollama.AsyncClient(host=settings.ollama_base_url)
-        self._model = settings.ollama_embed_model
+        self._client = client_for_role(settings.llm_embedder)
+        self._model = settings.llm_embedder.model
 
     async def verify(self) -> None:
         vec = await self.embed_text("warmup")
@@ -25,10 +25,11 @@ class EmbeddingService:
         # Progressively truncate if the model rejects the input length
         for limit in [len(text), 1800, 1200, 800, 400]:
             try:
-                resp = await self._client.embeddings(
-                    model=self._model, prompt=text[:limit]
+                resp = await self._client.embeddings.create(
+                    model=self._model,
+                    input=text[:limit],
                 )
-                return resp.embedding
+                return resp.data[0].embedding
             except Exception as e:
                 if limit == 400:
                     raise
