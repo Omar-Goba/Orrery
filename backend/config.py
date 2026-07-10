@@ -42,6 +42,8 @@ class Settings(BaseSettings):
 
     dbs_dir: Path = Path("./dbs")
     chroma_persist_dir: Path = Path("./dbs/chroma")
+    log_dir: Path = Field(default=Path("./dbs/logs"), validation_alias="ORRERY_LOG_DIR")
+    log_level: str = Field(default="INFO", validation_alias="ORRERY_LOG_LEVEL")
 
     backend_port: int = 8000
     cors_origins: str = "http://localhost:5173"

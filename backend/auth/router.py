@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from loguru import logger
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -61,6 +62,7 @@ async def signup(
     _origin: None = Depends(verify_origin),
 ) -> MeResponse:
     if not signup_limiter.allow(_client_ip(request)):
+        logger.info("Signup rate limited client_ip={}", _client_ip(request))
         raise HTTPException(429, "Too many signup attempts. Try again later.")
     try:
         user = service.signup(
@@ -71,9 +73,11 @@ async def signup(
             invite_code=body.invite_code,
         )
     except AuthError as exc:
+        logger.info("Signup failed handle={} status_code={}", body.handle, exc.status_code)
         raise HTTPException(exc.status_code, exc.message) from None
     token = service.create_session(db, user)
     service.set_session_cookie(response, token)
+    logger.info("Signup succeeded user_id={} handle={}", user.id, user.handle)
     return _me_response(user)
 
 
@@ -86,13 +90,16 @@ async def login(
     _origin: None = Depends(verify_origin),
 ) -> MeResponse:
     if not login_limiter.allow(_client_ip(request)):
+        logger.info("Login rate limited client_ip={}", _client_ip(request))
         raise HTTPException(429, "Too many login attempts. Try again later.")
     try:
         user = service.login(db, handle=body.handle, password=body.password)
     except AuthError as exc:
+        logger.info("Login failed handle={} status_code={}", body.handle, exc.status_code)
         raise HTTPException(exc.status_code, exc.message) from None
     token = service.create_session(db, user)
     service.set_session_cookie(response, token)
+    logger.info("Login succeeded user_id={} handle={}", user.id, user.handle)
     return _me_response(user)
 
 
@@ -106,6 +113,7 @@ async def logout(
     token = request.cookies.get(service.SESSION_COOKIE_NAME)
     if token:
         service.revoke_session(db, token)
+        logger.info("Logout session revoked")
     service.clear_session_cookie(response)
     response.status_code = 204
     return response

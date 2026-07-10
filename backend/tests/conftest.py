@@ -36,12 +36,14 @@ def _dummy_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def _reset_rate_limiters() -> None:
     # Rate limiter state is module-level (in-process); tests that hit the
     # limit on purpose must not leak into other tests.
-    from backend.auth.ratelimit import login_limiter, signup_limiter, tour_chat_limiter
+    from backend.auth.ratelimit import client_log_limiter, login_limiter, signup_limiter, tour_chat_limiter
 
+    client_log_limiter.reset()
     login_limiter.reset()
     signup_limiter.reset()
     tour_chat_limiter.reset()
     yield
+    client_log_limiter.reset()
     login_limiter.reset()
     signup_limiter.reset()
     tour_chat_limiter.reset()

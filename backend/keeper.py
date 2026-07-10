@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import BinaryIO
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,21 +11,10 @@ from backend.auth.deps import get_db, require_keeper
 from backend.auth.models import ROLE_VOYAGER, User
 from backend.config import settings
 from backend.models import QuotaPatchRequest, StoredFileEntry, VoyagerStorageSummary
+from backend.services.streaming import stream_object
 from backend.space import SpaceRegistry, get_space_registry
 
 router = APIRouter(prefix="/api/keeper", tags=["keeper"])
-
-
-def _stream_object(stream: BinaryIO, chunk_size: int = 1024 * 1024):
-    try:
-        while True:
-            chunk = stream.read(chunk_size)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        stream.close()
-
 
 def _voyager_or_404(handle: str, db: Session) -> User:
     user = db.exec(
@@ -135,7 +123,7 @@ async def get_voyager_raw_file(
         "Content-Length": str(stat.size_bytes),
     }
     return StreamingResponse(
-        _stream_object(space.objects.open(key)),
+        stream_object(space.objects.open(key)),
         media_type="application/pdf",
         headers=headers,
     )

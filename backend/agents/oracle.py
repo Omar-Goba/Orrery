@@ -1,12 +1,15 @@
 from __future__ import annotations
-import json
 import re
 from typing import AsyncGenerator
+
+from loguru import logger
 
 from backend.config import settings
 from backend.models import Citation, PaperRecord
 from backend.services.embeddings import EmbeddingService
 from backend.services.llm import client_for_role
+from backend.services.retrieval_defaults import ORACLE_CONTEXT_K
+from backend.services.sse import sse
 from backend.services.vectorstore import VectorStore
 from backend.store import PaperStore
 
@@ -33,7 +36,7 @@ class OracleAgent:
 
     async def stream(self, question: str) -> AsyncGenerator[str, None]:
         q_vec = await self._embed.embed_text(question)
-        chunks = self._vstore.query_chunks(q_vec, n_results=5)
+        chunks = self._vstore.query_chunks(q_vec, n_results=ORACLE_CONTEXT_K)
 
         context = self._build_context(chunks)
         messages = [
@@ -42,24 +45,32 @@ class OracleAgent:
         ]
 
         full_response = ""
-        async with self._client.chat.completions.stream(
-            model=self._model,
-            messages=messages,
-            temperature=0.3,
-        ) as stream:
-            async for event in stream:
-                if event.type == "content.delta":
-                    full_response += event.delta
-                    yield self._sse({"type": "chunk", "text": event.delta})
+        try:
+            async with self._client.chat.completions.stream(
+                model=self._model,
+                messages=messages,
+                temperature=0.3,
+            ) as stream:
+                async for event in stream:
+                    if event.type == "content.delta":
+                        full_response += event.delta
+                        yield sse({"type": "chunk", "text": event.delta})
+        except Exception:
+            logger.exception(
+                "LLM call failed role=llm_oracle endpoint={} model={}",
+                settings.llm_oracle.base_url,
+                settings.llm_oracle.model,
+            )
+            raise
 
         citations = self._extract_citations(full_response, chunks)
         if citations:
-            yield self._sse({
+            yield sse({
                 "type": "citations",
                 "papers": [c.model_dump() for c in citations],
             })
 
-        yield self._sse({"type": "done"})
+        yield sse({"type": "done"})
 
     def _build_context(self, chunks: list[dict]) -> str:
         parts: list[str] = []
@@ -99,7 +110,3 @@ class OracleAgent:
                 seen.add(pid)
 
         return cited
-
-    @staticmethod
-    def _sse(data: dict) -> str:
-        return f"data: {json.dumps(data)}\n\n"

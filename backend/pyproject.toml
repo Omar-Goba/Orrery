@@ -24,6 +24,7 @@ dependencies = [
     "rich>=13.7.0",
     "argon2-cffi>=23.1.0",
     "sqlmodel>=0.0.21",
+    "loguru>=0.7.2",
 ]
 
 [project.optional-dependencies]

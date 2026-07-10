@@ -1,7 +1,5 @@
 from __future__ import annotations
 import asyncio
-import json
-import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -12,99 +10,15 @@ from backend.clustering.hierarchical import HierarchicalClusterer
 from backend.clustering.namer import ClusterNamer
 from backend.models import ChunkRecord, PaperRecord
 from backend.services.embeddings import EmbeddingService
+from backend.services.chunking import chunk_text
+from backend.services.metadata_extraction import extract_metadata
 from backend.services.objectstore import ObjectStore
 from backend.services.ocr import OCRService
+from backend.services.retrieval_defaults import LIBRARIAN_SIMILARITY_K
+from backend.services.sse import sse
 from backend.services.summarize import SummaryService, front_matter_text
 from backend.services.vectorstore import VectorStore
 from backend.store import PaperStore
-
-MAX_CHARS = 2000
-OVERLAP_CHARS = 150
-
-
-def chunk_text(text: str) -> list[str]:
-    if not text:
-        return [""]
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = start + MAX_CHARS
-        chunks.append(text[start:end])
-        if end >= len(text):
-            break
-        start = end - OVERLAP_CHARS
-    return chunks
-
-
-_SKIP_TITLE = re.compile(
-    r"https?://|see discussions|researchgate\.net|arxiv\.org|doi\.org|"
-    r"all rights reserved|©\s*\d{4}|open access|preprint|under review|"
-    r"published in|proceedings of|workshop on|symposium on|"
-    r"permits use|permitted use|creative commons|attribution|reproduction in any|"
-    r"regulation or exceeds|obtain permission|^\s*arxiv:\d",
-    re.IGNORECASE,
-)
-_FALSE_AUTHOR = {
-    # Structure / boilerplate
-    "Abstract", "Introduction", "Conclusion", "Related", "The", "All", "This",
-    "Open", "Access", "Published", "Conference", "Proceedings", "Journal",
-    "Under", "Review", "Submitted", "Figure", "Table", "Section", "Appendix",
-    "References", "Background", "Method", "Approach", "System", "Based",
-    "Creative", "Commons", "Permits", "Attribution", "Correspondence",
-    # ML / AI domain words that appear in paper bodies
-    "Neural", "Deep", "Learning", "Language", "Large", "Vision", "Graph",
-    "Multi", "Agent", "Model", "Network", "Training", "Inference", "Data",
-    "Sentiment", "Robot", "Develop", "Engineering", "Research", "Paper",
-    "Scalable", "Adaptive", "Hierarchical", "Framework", "Benchmark",
-    "Evaluation", "Analysis", "Study", "Survey", "Generative",
-}
-
-
-def extract_metadata(text: str, filename: str) -> tuple[str | None, str | None, str | None]:
-    year_m = re.search(r"\b(19|20)\d{2}\b", text[:2000])
-    year = year_m.group(0) if year_m else None
-
-    lines = [l.strip() for l in text[:5000].splitlines() if l.strip()]
-
-    title_idx = None
-    title = None
-    for i, line in enumerate(lines[:25]):
-        if len(line) < 8 or len(line) > 200:
-            continue
-        if len(line.split()) < 3:  # single journal names / acronyms
-            continue
-        if _SKIP_TITLE.search(line):
-            continue
-        if re.search(r"\d+:\d+", line):  # journal vol:page
-            continue
-        title = re.sub(r'\b([A-Z])\s+([A-Z]{2,})', r'\1\2', line)[:150]
-        title_idx = i
-        break
-    if not title:
-        title = Path(filename).stem.replace("_", " ").replace("-", " ")
-
-    # If title ends with a preposition it's likely split across PDF lines — extend it
-    if title and title_idx is not None and re.search(
-        r'(?:\b(for|in|of|with|the|an?|and|or|by|to|on|at|as|via|from)|:)\s*$', title, re.I
-    ):
-        for j in range(title_idx + 1, min(title_idx + 3, len(lines))):
-            ext = lines[j]
-            if ext and not _SKIP_TITLE.search(ext) and not re.search(r'\d+:\d+', ext):
-                title = (title.rstrip() + " " + ext)[:150]
-                break
-
-    start = (title_idx + 1) if title_idx is not None else 1
-    author_last = None
-    for m in re.finditer(
-        r"\b([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})\b",
-        "\n".join(lines[start : start + 10]),
-    ):
-        if m.group(1) not in _FALSE_AUTHOR:
-            author_last = m.group(1)
-            break
-
-    return title, author_last, year
-
 
 class LibrarianAgent:
     def __init__(
@@ -162,15 +76,15 @@ class LibrarianAgent:
 
     async def search(self, description: str) -> AsyncGenerator[str, None]:
         q_vec = await self._embed.embed_text(description)
-        results = self._vstore.query_papers(q_vec, n_results=3)
+        results = self._vstore.query_papers(q_vec, n_results=LIBRARIAN_SIMILARITY_K)
         papers = []
         for r in results:
             pid = r["paper_id"]
             record = self._papers.get(pid)
             if record:
                 papers.append(record.model_dump(mode="json"))
-        yield self._sse({"type": "result", "papers": papers})
-        yield self._sse({"type": "done"})
+        yield sse({"type": "result", "papers": papers})
+        yield sse({"type": "done"})
 
     # ── ingest ─────────────────────────────────────────────────────────────
 
@@ -356,7 +270,3 @@ class LibrarianAgent:
                 if result is not None:
                     return result
         return None
-
-    @staticmethod
-    def _sse(data: dict) -> str:
-        return f"data: {json.dumps(data)}\n\n"

@@ -3,36 +3,15 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from backend.config import settings
+from backend.services.chunking import chunk_text
 from backend.services.llm import client_for_role
-
-MAX_CHARS = 2000
-OVERLAP_CHARS = 150
+from backend.services.metadata_extraction import extract_metadata
+from loguru import logger
 
 _REFERENCES_RE = re.compile(r"^\s*(references|bibliography)\b", re.IGNORECASE)
-_SKIP_TITLE = re.compile(
-    r"https?://|see discussions|researchgate\.net|arxiv\.org|doi\.org|"
-    r"all rights reserved|\u00a9\s*\d{4}|open access|preprint|under review|"
-    r"published in|proceedings of|workshop on|symposium on|"
-    r"permits use|permitted use|creative commons|attribution|reproduction in any|"
-    r"regulation or exceeds|obtain permission|^\s*arxiv:\d",
-    re.IGNORECASE,
-)
-_FALSE_AUTHOR = {
-    "Abstract", "Introduction", "Conclusion", "Related", "The", "All", "This",
-    "Open", "Access", "Published", "Conference", "Proceedings", "Journal",
-    "Under", "Review", "Submitted", "Figure", "Table", "Section", "Appendix",
-    "References", "Background", "Method", "Approach", "System", "Based",
-    "Creative", "Commons", "Permits", "Attribution", "Correspondence",
-    "Neural", "Deep", "Learning", "Language", "Large", "Vision", "Graph",
-    "Multi", "Agent", "Model", "Network", "Training", "Inference", "Data",
-    "Sentiment", "Robot", "Develop", "Engineering", "Research", "Paper",
-    "Scalable", "Adaptive", "Hierarchical", "Framework", "Benchmark",
-    "Evaluation", "Analysis", "Study", "Survey", "Generative",
-}
 _GENERIC_SUMMARY_RE = re.compile(
     r"^\s*(this paper|the paper|this study|the study)\s+"
     r"(discusses|presents|explores|examines|is about|focuses on)\s*\.?\s*$",
@@ -61,7 +40,7 @@ class SummaryResult:
 
 
 def front_matter_text(text: str, max_chunks: int = 4) -> str:
-    chunks = _chunk_text(text)[:max_chunks]
+    chunks = chunk_text(text)[:max_chunks]
     front = "\n\n".join(chunks)
     kept_lines: list[str] = []
     for line in front.splitlines():
@@ -97,22 +76,12 @@ class SummaryService:
             content = resp.choices[0].message.content or "{}"
             return _parse_model_result(content, "llm_summary")
         except Exception:
-            # TODO(logging): log llm_summary endpoint/model failure before heuristic fallback.
+            logger.exception(
+                "LLM call failed role=llm_summary endpoint={} model={}",
+                settings.llm_summary.base_url,
+                settings.llm_summary.model,
+            )
             return None
-
-
-def _chunk_text(text: str) -> list[str]:
-    if not text:
-        return [""]
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = start + MAX_CHARS
-        chunks.append(text[start:end])
-        if end >= len(text):
-            break
-        start = end - OVERLAP_CHARS
-    return chunks
 
 
 def _user_prompt(text: str, filename: str) -> str:
@@ -146,7 +115,7 @@ def _parse_model_result(content: str, source: str) -> SummaryResult | None:
 
 
 def _heuristic_result(text: str, filename: str) -> SummaryResult:
-    title, author_last, year = _extract_metadata(text, filename)
+    title, author_last, year = extract_metadata(text, filename)
     return SummaryResult(
         title=title,
         author_last=author_last,
@@ -154,53 +123,6 @@ def _heuristic_result(text: str, filename: str) -> SummaryResult:
         summary=None,
         source="heuristic",
     )
-
-
-def _extract_metadata(text: str, filename: str) -> tuple[str | None, str | None, str | None]:
-    year_m = re.search(r"\b(19|20)\d{2}\b", text[:2000])
-    year = year_m.group(0) if year_m else None
-
-    lines = [line.strip() for line in text[:5000].splitlines() if line.strip()]
-    title_idx = None
-    title = None
-    for i, line in enumerate(lines[:25]):
-        if len(line) < 8 or len(line) > 200:
-            continue
-        if len(line.split()) < 3:
-            continue
-        if _SKIP_TITLE.search(line):
-            continue
-        if re.search(r"\d+:\d+", line):
-            continue
-        title = re.sub(r"\b([A-Z])\s+([A-Z]{2,})", r"\1\2", line)[:150]
-        title_idx = i
-        break
-    if not title:
-        title = Path(filename).stem.replace("_", " ").replace("-", " ")
-
-    if title and title_idx is not None and re.search(
-        r"(?:\b(for|in|of|with|the|an?|and|or|by|to|on|at|as|via|from)|:)\s*$",
-        title,
-        re.IGNORECASE,
-    ):
-        for j in range(title_idx + 1, min(title_idx + 3, len(lines))):
-            ext = lines[j]
-            if ext and not _SKIP_TITLE.search(ext) and not re.search(r"\d+:\d+", ext):
-                title = (title.rstrip() + " " + ext)[:150]
-                break
-
-    start = (title_idx + 1) if title_idx is not None else 1
-    author_last = None
-    for match in re.finditer(
-        r"\b([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})\b",
-        "\n".join(lines[start : start + 10]),
-    ):
-        if match.group(1) not in _FALSE_AUTHOR:
-            author_last = match.group(1)
-            break
-
-    return title, author_last, year
-
 
 def _clean_str(value: Any, max_len: int) -> str | None:
     if value is None:

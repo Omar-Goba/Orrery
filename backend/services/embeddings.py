@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 
 import numpy as np
+from loguru import logger
 
 from backend.config import settings
 from backend.services.llm import client_for_role
@@ -32,8 +33,18 @@ class EmbeddingService:
                 return resp.data[0].embedding
             except Exception as e:
                 if limit == 400:
+                    logger.exception(
+                        "LLM call failed role=llm_embedder endpoint={} model={}",
+                        settings.llm_embedder.base_url,
+                        settings.llm_embedder.model,
+                    )
                     raise
                 if "context length" not in str(e).lower() and "input length" not in str(e).lower():
+                    logger.exception(
+                        "LLM call failed role=llm_embedder endpoint={} model={}",
+                        settings.llm_embedder.base_url,
+                        settings.llm_embedder.model,
+                    )
                     raise
         raise RuntimeError("embed_text: all truncation levels failed")
 

@@ -3,6 +3,8 @@ import json
 import re
 from collections.abc import Mapping
 
+from loguru import logger
+
 from backend.clustering.hierarchical import ClusterNode, ClusterTree
 from backend.config import settings
 from backend.models import PaperRecord
@@ -37,6 +39,11 @@ class ClusterNamer:
             raw = resp.choices[0].message.content or ""
             return self._sanitize(raw)
         except Exception:
+            logger.exception(
+                "LLM call failed role=llm_namer endpoint={} model={}",
+                settings.llm_namer.base_url,
+                settings.llm_namer.model,
+            )
             return self._sanitize(paper_summaries[0])
 
     async def name_tree(
@@ -88,6 +95,11 @@ class ClusterNamer:
             content = resp.choices[0].message.content or "{}"
             return self._parse_name_map(content)
         except Exception:
+            logger.exception(
+                "LLM call failed role=llm_namer endpoint={} model={}",
+                settings.llm_namer.base_url,
+                settings.llm_namer.model,
+            )
             return {}
 
     async def _repair_names_llm(
@@ -119,6 +131,11 @@ class ClusterNamer:
             parsed = self._parse_name_map(content)
             return {node_id: parsed[node_id] for node_id in invalid_ids if node_id in parsed}
         except Exception:
+            logger.exception(
+                "LLM call failed role=llm_namer endpoint={} model={}",
+                settings.llm_namer.base_url,
+                settings.llm_namer.model,
+            )
             return {}
 
     def _sanitize(self, raw: str) -> str:

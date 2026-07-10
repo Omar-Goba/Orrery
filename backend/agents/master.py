@@ -2,8 +2,11 @@ from __future__ import annotations
 import json
 from typing import AsyncGenerator
 
+from loguru import logger
+
 from backend.config import settings
 from backend.services.llm import client_for_role
+from backend.services.sse import sse
 
 TOOLS = [
     {
@@ -101,18 +104,26 @@ class MasterAgent:
             messages.extend(history)
         messages.append({"role": "user", "content": message})
 
-        resp = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="required",
-            temperature=0,
-        )
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="required",
+                temperature=0,
+            )
+        except Exception:
+            logger.exception(
+                "LLM call failed role=llm_master endpoint={} model={}",
+                settings.llm_master.base_url,
+                settings.llm_master.model,
+            )
+            raise
 
         choice = resp.choices[0]
         if not choice.message.tool_calls:
-            yield f"data: {json.dumps({'type': 'chunk', 'text': choice.message.content or ''})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield sse({"type": "chunk", "text": choice.message.content or ""})
+            yield sse({"type": "done"})
             return
 
         tool_call = choice.message.tool_calls[0]
@@ -128,5 +139,5 @@ class MasterAgent:
             async for chunk in self._status.set_status(args["description"], args["status"]):
                 yield chunk
         else:
-            yield f"data: {json.dumps({'type': 'chunk', 'text': 'Unknown tool.'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield sse({"type": "chunk", "text": "Unknown tool."})
+            yield sse({"type": "done"})
