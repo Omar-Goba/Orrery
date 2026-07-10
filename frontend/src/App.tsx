@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { UniverseScene } from "./scenes/UniverseScene";
 import { GalaxyScene } from "./scenes/GalaxyScene";
 import { WarpOverlay } from "./scenes/WarpOverlay";
-import { getSession, logout, OWNER_USERNAME, type GalaxyMode } from "./auth/session";
+import { getSession, logout, OWNER_USERNAME, refreshSession, type GalaxyMode } from "./auth/session";
 
 type GalaxyId = string; // "omar" | any fake/visitor username
 
@@ -40,13 +40,21 @@ export default function App() {
     sessionStorage.setItem(SCENE_KEY, JSON.stringify(displayed));
   }, [displayed]);
 
+  useEffect(() => {
+    let cancelled = false;
+    refreshSession().then((fresh) => {
+      if (!cancelled) setSession(fresh);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   const beginWarp = (to: GalaxyId, reverse = false) => {
     // Never let two warps overlap — a click mid-transition is a no-op.
     setWarping(current => current ?? { to, reverse });
   };
 
   const modeFor = (galaxy: GalaxyId): GalaxyMode =>
-    session?.isOwner && galaxy === OWNER_USERNAME ? "owner" : "observer";
+    session?.username === galaxy ? "owner" : "observer";
 
   return (
     <>
@@ -65,10 +73,15 @@ export default function App() {
           key={displayed.galaxy}
           galaxy={displayed.galaxy}
           mode={modeFor(displayed.galaxy)}
+          session={session}
           onExitToUniverse={() => beginWarp(displayed.galaxy, true)}
           onLogout={
             modeFor(displayed.galaxy) === "owner"
-              ? () => { logout(); setSession(null); beginWarp(displayed.galaxy, true); }
+              ? () => {
+                  void logout();
+                  setSession(null);
+                  beginWarp(displayed.galaxy, true);
+                }
               : undefined
           }
           initialView={{ k: 0.55 }}

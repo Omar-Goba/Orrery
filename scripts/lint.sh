@@ -19,21 +19,47 @@ lint_backend() {
   local py
   py="$(python_bin)"
   run_quiet "backend python compile check" "$py" -m py_compile \
+    "$ROOT/backend/agents/curator.py" \
     "$ROOT/backend/agents/librarian.py" \
+    "$ROOT/backend/agents/master.py" \
+    "$ROOT/backend/agents/oracle.py" \
+    "$ROOT/backend/agents/status.py" \
+    "$ROOT/backend/auth/__init__.py" \
+    "$ROOT/backend/auth/db.py" \
+    "$ROOT/backend/auth/deps.py" \
+    "$ROOT/backend/auth/models.py" \
+    "$ROOT/backend/auth/ratelimit.py" \
+    "$ROOT/backend/auth/router.py" \
+    "$ROOT/backend/auth/security.py" \
+    "$ROOT/backend/auth/service.py" \
     "$ROOT/backend/clustering/hierarchical.py" \
     "$ROOT/backend/clustering/namer.py" \
     "$ROOT/backend/config.py" \
     "$ROOT/backend/main.py" \
     "$ROOT/backend/models.py" \
     "$ROOT/backend/services/embeddings.py" \
-    "$ROOT/backend/services/filesystem.py" \
+    "$ROOT/backend/services/objectstore.py" \
+    "$ROOT/backend/services/tree.py" \
     "$ROOT/backend/services/ocr.py" \
     "$ROOT/backend/services/summarize.py" \
     "$ROOT/backend/services/vectorstore.py" \
+    "$ROOT/backend/space.py" \
     "$ROOT/backend/store.py" \
+    "$ROOT/backend/tools/__init__.py" \
+    "$ROOT/backend/tools/migrate_to_multiuser.py" \
+    "$ROOT/backend/tests/conftest.py" \
+    "$ROOT/backend/tests/test_auth_api.py" \
+    "$ROOT/backend/tests/test_auth_unit.py" \
     "$ROOT/backend/tests/test_hierarchical.py" \
+    "$ROOT/backend/tests/test_migrate_to_multiuser.py" \
     "$ROOT/backend/tests/test_namer.py" \
+    "$ROOT/backend/tests/test_objectstore.py" \
+    "$ROOT/backend/tests/test_paper_store_concurrency.py" \
+    "$ROOT/backend/tests/test_papers_api.py" \
+    "$ROOT/backend/tests/test_scoped_objectstore.py" \
+    "$ROOT/backend/tests/test_space.py" \
     "$ROOT/backend/tests/test_summarize.py" \
+    "$ROOT/backend/tests/test_tree.py" \
     "$ROOT/scripts/bulk_ingest.py"
 }
 

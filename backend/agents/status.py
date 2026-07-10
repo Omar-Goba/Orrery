@@ -3,9 +3,8 @@ import json
 from typing import AsyncGenerator
 
 from backend.services.embeddings import EmbeddingService
-from backend.services.filesystem import FilesystemService
 from backend.services.vectorstore import VectorStore
-from backend.store import paper_store
+from backend.store import PaperStore
 
 
 class StatusAgent:
@@ -13,11 +12,11 @@ class StatusAgent:
         self,
         embed_svc: EmbeddingService,
         vstore: VectorStore,
-        fs_svc: FilesystemService,
+        paper_store: PaperStore,
     ) -> None:
         self._embed  = embed_svc
         self._vstore = vstore
-        self._fs     = fs_svc
+        self._papers = paper_store
 
     async def set_status(
         self, description: str, status: str
@@ -32,7 +31,7 @@ class StatusAgent:
             return
 
         pid    = results[0]["paper_id"]
-        record = paper_store.get(pid)
+        record = self._papers.get(pid)
         if not record:
             yield self._sse({"type": "chunk", "text": "Paper found in index but missing from the store — try reindexing."})
             yield self._sse({"type": "done"})
@@ -46,16 +45,11 @@ class StatusAgent:
             yield self._sse({"type": "done"})
             return
 
-        # Update in-memory store
-        old_name       = record.symlink_name
+        # Update in-memory store + Chroma metadata — no disk mutation, the
+        # tree is a pure function of records (backend/services/tree.py).
         record.status  = status  # type: ignore[assignment]
-        record.symlink_name = self._fs.make_symlink_name(record)
-
-        # Rename symlink on disk + update Chroma metadata
-        if old_name:
-            self._fs.update_symlink_status(record, old_name)
         self._vstore.update_paper_status(pid, status)
-        paper_store.save()
+        await self._papers.save()
 
         yield self._sse({"type": "status_update", "paper": record.model_dump(mode="json")})
         yield self._sse({"type": "chunk", "text": f"Marked **{title}** as {label}."})

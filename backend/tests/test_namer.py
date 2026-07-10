@@ -22,14 +22,14 @@ async def test_name_tree_fallback_dedupes_sibling_names(monkeypatch: pytest.Monk
         "p1": PaperRecord(
             id="p1",
             filename="a.pdf",
-            original_path="a.pdf",
+            source_filename="a.pdf",
             status="toread",
             summary="Graph neural networks for molecules.",
         ),
         "p2": PaperRecord(
             id="p2",
             filename="b.pdf",
-            original_path="b.pdf",
+            source_filename="b.pdf",
             status="toread",
             summary="Transformer models for vision.",
         ),
@@ -54,8 +54,8 @@ async def test_name_tree_preserves_misc(monkeypatch: pytest.MonkeyPatch) -> None
         ClusterNode(name="Misc", paper_ids=["p2"]),
     ]
     records = {
-        "p1": PaperRecord(id="p1", filename="a.pdf", original_path="a.pdf", status="toread"),
-        "p2": PaperRecord(id="p2", filename="b.pdf", original_path="b.pdf", status="toread"),
+        "p1": PaperRecord(id="p1", filename="a.pdf", source_filename="a.pdf", status="toread"),
+        "p2": PaperRecord(id="p2", filename="b.pdf", source_filename="b.pdf", status="toread"),
     }
 
     await namer.name_tree(tree, records)

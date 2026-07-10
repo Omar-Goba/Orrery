@@ -2,6 +2,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator, Callable
@@ -10,11 +12,11 @@ from backend.clustering.hierarchical import HierarchicalClusterer
 from backend.clustering.namer import ClusterNamer
 from backend.models import ChunkRecord, PaperRecord
 from backend.services.embeddings import EmbeddingService
-from backend.services.filesystem import FilesystemService
+from backend.services.objectstore import ObjectStore
 from backend.services.ocr import OCRService
 from backend.services.summarize import SummaryService, front_matter_text
 from backend.services.vectorstore import VectorStore
-from backend.store import PaperStore, paper_id_for, paper_store
+from backend.store import PaperStore
 
 MAX_CHARS = 2000
 OVERLAP_CHARS = 150
@@ -110,12 +112,20 @@ class LibrarianAgent:
         ocr_svc: OCRService,
         embed_svc: EmbeddingService,
         vstore: VectorStore,
-        fs_svc: FilesystemService,
+        object_store: ObjectStore,
+        paper_store: PaperStore,
+        ocr_cache_dir: Path | None = None,
     ) -> None:
         self._ocr = ocr_svc
         self._embed = embed_svc
         self._vstore = vstore
-        self._fs = fs_svc
+        self._objects = object_store
+        self._papers = paper_store
+        # Defaults to the global `settings.ocr_cache_dir`; a per-user
+        # `UserSpace` passes `settings.user_ocr_cache_dir(user_id)` so the
+        # sidecar physically lands under `users/{user_id}/ocr_cache/` (plan
+        # §4.1) even though `OCRService` itself stays a shared singleton.
+        self._ocr_cache_dir = ocr_cache_dir
         self._summary = SummaryService()
         self._clusterer = HierarchicalClusterer()
         self._namer = ClusterNamer()
@@ -138,16 +148,13 @@ class LibrarianAgent:
         tree = self._clusterer.cluster(paper_ids, vectors)
 
         progress_cb("Naming clusters…", 35)
-        await self._namer.name_tree(tree, paper_store.as_dict())
+        await self._namer.name_tree(tree, self._papers.as_dict())
 
-        progress_cb("Assigning paths…", 80)
-        self._assign_paths(tree, paper_store.as_dict())
-
-        progress_cb("Rebuilding folder tree…", 88)
-        self._fs.rebuild_tree(tree, paper_store.as_dict())
+        progress_cb("Assigning paths…", 88)
+        self._assign_paths(tree, self._papers.as_dict())
 
         progress_cb("Saving…", 96)
-        paper_store.save()
+        await self._papers.save()
 
         progress_cb("Done", 100)
 
@@ -159,7 +166,7 @@ class LibrarianAgent:
         papers = []
         for r in results:
             pid = r["paper_id"]
-            record = paper_store.get(pid)
+            record = self._papers.get(pid)
             if record:
                 papers.append(record.model_dump(mode="json"))
         yield self._sse({"type": "result", "papers": papers})
@@ -169,22 +176,42 @@ class LibrarianAgent:
 
     async def ingest(
         self,
-        pdf_path: Path,
+        paper_id: str,
+        object_key: str,
+        source_filename: str,
         status: str,
         progress_cb: Callable[[str, int], None],
     ) -> PaperRecord:
-        paper_id = paper_id_for(pdf_path)
+        """Ingest an already-stored PDF.
 
-        # OCR
+        `object_key` must already exist in the `ObjectStore` (the upload
+        endpoint writes it there before kicking this off). This method never
+        constructs a filesystem path itself — the only local path it ever
+        touches is a throwaway tempfile it copies the object into so pypdf
+        has something to open (plan §10.1 rule #4), which it always cleans
+        up in a `finally`.
+        """
+        # OCR — copy the object out to a scratch tempfile; pypdf needs a
+        # real path, but the tempfile's path is never persisted anywhere.
         progress_cb("Extracting text (OCR)…", 5)
-        text = await self._ocr.extract(pdf_path)
+        tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
+        tmp_path = Path(tmp_name)
+        try:
+            with open(tmp_fd, "wb") as tmp_file, self._objects.open(object_key) as src:
+                shutil.copyfileobj(src, tmp_file)
+            text = await self._ocr.extract(
+                tmp_path, cache_key=paper_id, cache_dir=self._ocr_cache_dir
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
         if not text.strip():
-            text = pdf_path.stem.replace("_", " ")
-        title, author, year = extract_metadata(text, pdf_path.stem)
+            text = Path(source_filename).stem.replace("_", " ")
+        title, author, year = extract_metadata(text, Path(source_filename).stem)
         progress_cb("OCR complete", 20)
 
         progress_cb("Summarizing front matter…", 22)
-        summary_result = await self._summary.summarize(text, pdf_path.name)
+        summary_result = await self._summary.summarize(text, source_filename)
         title = summary_result.title or title
         author = summary_result.author_last or author
         year = summary_result.year or year
@@ -198,7 +225,7 @@ class LibrarianAgent:
         # Embed
         progress_cb("Embedding chunks…", 35)
         chunk_vecs = await self._embed.embed_batch(chunks)
-        paper_vec = await self._paper_vector(text, pdf_path.name, title, summary)
+        paper_vec = await self._paper_vector(text, source_filename, title, summary)
         progress_cb("Embedded", 60)
 
         # Store in Chroma
@@ -210,8 +237,8 @@ class LibrarianAgent:
         self._vstore.add_chunks(paper_id, chunk_records, chunk_vecs)
         self._vstore.upsert_paper_vector(
             paper_id, paper_vec,
-            {"filename": pdf_path.name, "status": status,
-             "original_path": str(pdf_path.resolve()),
+            {"filename": source_filename, "status": status,
+             "source_filename": source_filename,
              "title": title or "", "author": author or "", "year": year or "",
              "summary": summary or ""},
         )
@@ -225,15 +252,15 @@ class LibrarianAgent:
         # Name — bottom-up so internal nodes are named after their children
         progress_cb("Naming folders…", 80)
         pending_record = PaperRecord(
-            id=paper_id, filename=pdf_path.name,
-            original_path=str(pdf_path.resolve()),
+            id=paper_id, filename=source_filename,
+            source_filename=source_filename,
             status=status,  # type: ignore[arg-type]
             title=title, author=author, year=year,
             summary=summary,
             ingested_at=datetime.now(timezone.utc),
             ocr_cached=True,
         )
-        all_records = {**paper_store.as_dict(), paper_id: pending_record}
+        all_records = {**self._papers.as_dict(), paper_id: pending_record}
         await self._namer.name_tree(tree, all_records)
         progress_cb("Folders named", 85)
 
@@ -245,16 +272,13 @@ class LibrarianAgent:
 
         record = pending_record
         record.cluster_path = cluster_path
-        record.symlink_name = self._fs.make_symlink_name(record)
-        paper_store.put(record)
+        self._papers.put(record)
 
-        # Rebuild FS
-        progress_cb("Rebuilding folder tree…", 87)
-        self._fs.rebuild_tree(tree, paper_store.as_dict())
-        progress_cb("Tree rebuilt", 95)
+        progress_cb("Assigning paths…", 90)
 
-        # Persist
-        paper_store.save()
+        # Persist — no disk-tree rebuild: GET /api/tree is a pure function
+        # of these records (backend/services/tree.py).
+        await self._papers.save()
         progress_cb("Done", 100)
         return record
 
@@ -304,7 +328,7 @@ class LibrarianAgent:
         records: dict,
         prefix: str = "",
     ) -> None:
-        """Walk the cluster tree and write cluster_path + symlink_name onto every record."""
+        """Walk the cluster tree and write cluster_path onto every record."""
         for node in nodes:
             path = f"{prefix}/{node.name}" if prefix else node.name
             if node.is_leaf:
@@ -312,7 +336,6 @@ class LibrarianAgent:
                     r = records.get(pid)
                     if r:
                         r.cluster_path = path
-                        r.symlink_name = self._fs.make_symlink_name(r)
             else:
                 self._assign_paths(node.children, records, path)
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookOpen, RefreshCw, FolderTree, Network, MessageSquare, PanelLeftClose, ScanSearch, Search } from "lucide-react";
+import { BookOpen, RefreshCw, FolderTree, Network, MessageSquare, PanelLeftClose, ScanSearch, Search, HardDrive } from "lucide-react";
 import clsx from "clsx";
 import { TreeView } from "../components/TreeView";
 import { PaperGraph, type PaperGraphHandle } from "../components/PaperGraph";
@@ -10,12 +10,12 @@ import { StarCard } from "../components/StarCard";
 import { GalaxyPlaque } from "../components/GalaxyPlaque";
 import { TourController } from "../components/TourController";
 import { computeGalaxyStats } from "../lib/galaxy";
-import type { PaperRecord, SimilarityGraph, TreeNode } from "../api/client";
+import type { ApiMode, PaperRecord, SimilarityGraph, StoredFileEntry, TreeNode, VoyagerStorageSummary } from "../api/client";
 import {
-  getPaperUrl, getSimilarityGraph, getTree, listPapers, setPaperStatus, streamReindex,
+  formatBytes, getPaperUrl, getSimilarityGraph, getTree, listKeeperVoyagerFiles, listKeeperVoyagers, listPapers, setPaperStatus, streamReindex,
 } from "../api/client";
 import { OWNER_USERNAME } from "../auth/session";
-import type { GalaxyMode } from "../auth/session";
+import type { GalaxyMode, Session } from "../auth/session";
 
 type MobileView = "tree" | "graph" | "chat";
 type PaperStatus = "read" | "toread";
@@ -27,12 +27,14 @@ const PALETTE_COLORS = [
 export function GalaxyScene({
   galaxy,
   mode,
+  session,
   onExitToUniverse,
   onLogout,
   initialView,
 }: {
   galaxy: string;
   mode: GalaxyMode;
+  session: Session | null;
   /** Keep session, return to the universe map. */
   onExitToUniverse: () => void;
   /** Owner-only: clear session and return to the universe map. */
@@ -61,9 +63,10 @@ export function GalaxyScene({
   const oracleTokenRef = useRef(0);
   const meteorRef   = useRef<{ arrive: (clusterPath: string) => void; cancel: () => void } | null>(null);
 
-  // Single-user backend: only the owner's galaxy has real data. Non-owner
-  // galaxies (fake signups) render dark — never fetch, never fake a payload.
-  const hasRealData = galaxy === OWNER_USERNAME;
+  // Owner mode always reads the authenticated user's own galaxy. Observer mode
+  // only has one public target: Omar's Keeper tour.
+  const hasRealData = mode === "owner" || galaxy === OWNER_USERNAME;
+  const apiMode: ApiMode = mode === "observer" ? "tour" : "normal";
 
   const load = useCallback(async () => {
     if (!hasRealData) {
@@ -72,19 +75,20 @@ export function GalaxyScene({
       return;
     }
     try {
-      const [t, p] = await Promise.all([getTree(), listPapers()]);
+      const [t, p] = await Promise.all([getTree(apiMode), listPapers(apiMode)]);
       setTree(t);
       setPapers(p);
     } catch {
       setTree(null);
+      setPapers([]);
     }
     try {
-      setSimilarity(await getSimilarityGraph());
+      setSimilarity(await getSimilarityGraph(apiMode));
     } catch {
       // Real-embedding constellation edges are an enhancement, not required —
       // ignore failures so a missing/older backend doesn't break the graph.
     }
-  }, [hasRealData]);
+  }, [apiMode, hasRealData]);
 
   useEffect(() => {
     queueMicrotask(() => { void load(); });
@@ -135,8 +139,8 @@ export function GalaxyScene({
   const openPaperById = useCallback((paperId: string) => {
     const paper = papers.find(p => p.id === paperId);
     if (paper) setActivePaper(paper);
-    else window.open(getPaperUrl(paperId), "_blank");
-  }, [papers]);
+    else window.open(getPaperUrl(paperId, apiMode), "_blank");
+  }, [apiMode, papers]);
 
   // Desktop graph click: pin the StarCard instead of opening the reader
   // directly — one more click to open, but far less jumpy for observers.
@@ -183,6 +187,7 @@ export function GalaxyScene({
   const constellations = computeGalaxyStats(papers).constellations;
   // Observer gating is cosmetic until real auth lands — the API remains open.
   const isObserver  = mode === "observer";
+  const showStorageLedger = !isObserver && session?.role === "keeper";
 
   return (
     <div className="h-[100dvh] overflow-hidden bg-bg text-ink dark">
@@ -217,6 +222,7 @@ export function GalaxyScene({
             displayName={galaxy === OWNER_USERNAME ? "Omar's galaxy" : `${galaxy}'s galaxy`}
           />
         )}
+        {showStorageLedger && <StorageLedger />}
         {(pinnedPaper ?? hovered) && !activePaper && (
           <StarCard
             paper={(pinnedPaper ?? hovered)!}
@@ -288,6 +294,7 @@ export function GalaxyScene({
           onUploadStart={handleUploadStart}
           onUploadArrive={handleUploadArrive}
           onUploadCancel={handleUploadCancel}
+          apiMode={apiMode}
           disableUpload={isObserver}
           prefill={oraclePrefill ?? undefined}
         />
@@ -315,6 +322,7 @@ export function GalaxyScene({
                 key={activePaper.id}
                 paper={activePaper}
                 mode="desktop"
+                apiMode={apiMode}
                 onClose={() => setActivePaper(null)}
                 onToggleStatus={isObserver ? undefined : toggleStatus}
               />
@@ -337,6 +345,12 @@ export function GalaxyScene({
           onExitToUniverse={onExitToUniverse}
           onLogout={onLogout}
         />
+
+        {showStorageLedger && (
+          <div className="shrink-0 border-b border-rim bg-surface/75 px-3 py-3">
+            <StorageLedger compact />
+          </div>
+        )}
 
         {/* Panels — always rendered, shown/hidden via CSS to preserve state */}
         <div className="flex-1 overflow-hidden relative min-h-0">
@@ -386,7 +400,7 @@ export function GalaxyScene({
           >
             <AgentPortal
               onUploadDone={refresh} onOpenPaper={openPaper} onOpenPaperId={openPaperById}
-              hideHeader disableUpload={isObserver} prefill={oraclePrefill ?? undefined}
+              hideHeader apiMode={apiMode} disableUpload={isObserver} prefill={oraclePrefill ?? undefined}
             />
           </div>
         </div>
@@ -396,6 +410,7 @@ export function GalaxyScene({
             key={activePaper.id}
             paper={activePaper}
             mode="mobile"
+            apiMode={apiMode}
             onClose={() => setActivePaper(null)}
             onToggleStatus={isObserver ? undefined : toggleStatus}
           />
@@ -615,6 +630,101 @@ function patchTreeStatus(node: TreeNode, paperId: string, status: PaperStatus): 
     return patched;
   });
   return changed ? { ...node, children } : node;
+}
+
+function StorageLedger({ compact = false }: { compact?: boolean }) {
+  const [voyagers, setVoyagers] = useState<VoyagerStorageSummary[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [files, setFiles] = useState<StoredFileEntry[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listKeeperVoyagers()
+      .then(rows => {
+        if (cancelled) return;
+        setVoyagers(rows);
+        setSelected(current => current ?? rows[0]?.handle ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setVoyagers([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    listKeeperVoyagerFiles(selected)
+      .then(rows => { if (!cancelled) setFiles(rows); })
+      .catch(() => { if (!cancelled) setFiles([]); });
+    return () => { cancelled = true; };
+  }, [selected]);
+
+  const selectedSummary = voyagers.find(v => v.handle === selected) ?? null;
+
+  return (
+    <section className={clsx(
+      "z-20 rounded-2xl border border-rim bg-surface/85 shadow-panel backdrop-blur-xl",
+      compact ? "max-h-[32dvh] overflow-hidden" : "absolute right-5 top-20 w-[340px] overflow-hidden"
+    )}>
+      <header className="flex items-center gap-2 border-b border-rim/70 px-3.5 py-3">
+        <HardDrive size={14} className="text-cyan-400" />
+        <div>
+          <p className="text-[12px] font-semibold text-ink">Storage Ledger</p>
+          <p className="text-[10px] text-muted">Voyager file metadata only</p>
+        </div>
+      </header>
+      <div className={clsx("grid gap-3 p-3", compact ? "grid-cols-1" : "") }>
+        <div className="space-y-2">
+          {voyagers.length === 0 ? (
+            <p className="rounded-xl border border-rim bg-bg/50 px-3 py-3 text-[11px] text-muted">No voyagers yet.</p>
+          ) : voyagers.map(voyager => {
+            const pct = voyager.storage_quota_bytes > 0
+              ? Math.min(100, (voyager.storage_used_bytes / voyager.storage_quota_bytes) * 100)
+              : 0;
+            return (
+              <button
+                key={voyager.handle}
+                onClick={() => setSelected(voyager.handle)}
+                className={clsx(
+                  "w-full rounded-xl border px-3 py-2 text-left transition-colors",
+                  selected === voyager.handle
+                    ? "border-cyan-400/40 bg-cyan-500/10"
+                    : "border-rim bg-bg/50 hover:border-wire"
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-[12px] font-semibold text-zinc-200">{voyager.display_name}</span>
+                  <span className="shrink-0 text-[10px] text-muted">{voyager.paper_count} files</span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-rim">
+                  <div className="h-full rounded-full bg-gradient-to-r from-cyan-600 to-cyan-400" style={{ width: `${pct}%` }} />
+                </div>
+                <p className="mt-1.5 text-[10px] text-muted">
+                  {formatBytes(voyager.storage_used_bytes)} / {formatBytes(voyager.storage_quota_bytes)}
+                  {voyager.disabled ? " · disabled" : ""}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+        {selectedSummary && (
+          <div className="max-h-48 space-y-1.5 overflow-y-auto pr-1">
+            {files.length === 0 ? (
+              <p className="rounded-xl border border-rim bg-bg/50 px-3 py-3 text-[11px] text-muted">No stored PDFs.</p>
+            ) : files.map(file => (
+              <div key={file.paper_id} className="rounded-lg border border-rim bg-bg/45 px-2.5 py-2">
+                <p className="truncate text-[11px] font-medium text-zinc-300">{file.filename}</p>
+                <p className="mt-0.5 text-[10px] text-muted">
+                  {formatBytes(file.size_bytes)} · {new Date(file.uploaded_at).toLocaleDateString()}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 // ── Graph empty state ─────────────────────────────────────────────────────────

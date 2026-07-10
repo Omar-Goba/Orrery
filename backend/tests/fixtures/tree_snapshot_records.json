@@ -1,0 +1,82 @@
+[
+  {
+    "id": "p1",
+    "filename": "a.pdf",
+    "original_path": "/tmp/a.pdf",
+    "status": "toread",
+    "title": "Attention Is All You Need",
+    "author": "Vaswani",
+    "year": "2017",
+    "cluster_path": "Language Models/Transformers"
+  },
+  {
+    "id": "p2",
+    "filename": "b.pdf",
+    "original_path": "/tmp/b.pdf",
+    "status": "read",
+    "title": "BERT Pretraining",
+    "author": "Devlin",
+    "year": "2018",
+    "cluster_path": "Language Models/Transformers"
+  },
+  {
+    "id": "p3",
+    "filename": "c.pdf",
+    "original_path": "/tmp/c.pdf",
+    "status": "toread",
+    "title": "GPT-3 Few Shot Learners",
+    "author": "Brown",
+    "year": "2020",
+    "cluster_path": "Language Models/Scaling Laws"
+  },
+  {
+    "id": "p4",
+    "filename": "d.pdf",
+    "original_path": "/tmp/d.pdf",
+    "status": "read",
+    "title": "ResNet Deep Residual Learning",
+    "author": "He",
+    "year": "2016",
+    "cluster_path": "Computer Vision/Image Classification"
+  },
+  {
+    "id": "p5",
+    "filename": "e.pdf",
+    "original_path": "/tmp/e.pdf",
+    "status": "toread",
+    "title": "Mask R-CNN",
+    "author": "He",
+    "year": "2017",
+    "cluster_path": "Computer Vision/Segmentation"
+  },
+  {
+    "id": "p6",
+    "filename": "f.pdf",
+    "original_path": "/tmp/f.pdf",
+    "status": "read",
+    "title": "Diffusion Models Beat GANs",
+    "author": "Dhariwal",
+    "year": "2021",
+    "cluster_path": "Computer Vision/Segmentation"
+  },
+  {
+    "id": "p7",
+    "filename": "g.pdf",
+    "original_path": "/tmp/g.pdf",
+    "status": "toread",
+    "title": "AlphaFold Protein Structure",
+    "author": "Jumper",
+    "year": "2021",
+    "cluster_path": "Biology"
+  },
+  {
+    "id": "p8",
+    "filename": "h.pdf",
+    "original_path": "/tmp/h.pdf",
+    "status": "read",
+    "title": "Deep Learning for Genomics",
+    "author": "Zhou",
+    "year": "2015",
+    "cluster_path": "Biology"
+  }
+]

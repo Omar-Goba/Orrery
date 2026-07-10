@@ -6,14 +6,26 @@ Usage:
     python scripts/bulk_ingest.py --dry-run  # preview only
     python scripts/bulk_ingest.py --reset    # clear Chroma + papers.json and start fresh
     python scripts/bulk_ingest.py --revector # update paper vectors from summaries only
+
+Phase 2 (ObjectStore + virtual tree) note: this script is a legacy bulk
+importer for PDFs dropped directly into `dbs/input/`. It writes every
+imported PDF's bytes through the `ObjectStore` under a content-hash key —
+same as the live `/api/papers/upload` endpoint — rather than leaving them
+where they land on disk. `dbs/output/` (the old symlink forest) is no
+longer read or written anywhere; `GET /api/tree` is a pure function of the
+records, computed live, so there is nothing left here to "finalize" onto
+disk.
 """
 from __future__ import annotations
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,15 +45,54 @@ from backend.clustering.hierarchical import HierarchicalClusterer
 from backend.clustering.namer import ClusterNamer
 from backend.models import ChunkRecord, PaperRecord
 from backend.services.embeddings import EmbeddingService
-from backend.services.filesystem import FilesystemService
+from backend.services.objectstore import LocalObjectStore, ObjectStore
 from backend.services.ocr import OCRService
 from backend.services.summarize import SummaryService, front_matter_text
 from backend.services.vectorstore import VectorStore
-from backend.store import PaperStore, paper_id_for
+from backend.store import PaperStore
 
 console = Console()
 MAX_CHARS = 2000
 OVERLAP_CHARS = 150
+
+# Legacy drop-folder for this CLI tool only — the live API never reads a
+# path like this; it goes straight from an upload stream into the
+# ObjectStore. This constant is intentionally local to the script, not on
+# `Settings`, so nothing in `backend/` can be tempted to reach for it.
+LEGACY_INPUT_DIR = ROOT / "dbs" / "input"
+
+
+def _object_key_for(paper_id: str) -> str:
+    return f"papers/{paper_id}.pdf"
+
+
+def _hash_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()[:16]
+
+
+class _ScratchCopy:
+    """Copies an ObjectStore object out to a throwaway tempfile so pypdf has
+    a real local path to open, cleaning up on exit (plan §10.1 rule #4)."""
+
+    def __init__(self, store: ObjectStore, key: str) -> None:
+        self._store = store
+        self._key = key
+        self._path: Path | None = None
+
+    def __enter__(self) -> Path:
+        fd, name = tempfile.mkstemp(suffix=".pdf")
+        self._path = Path(name)
+        with open(fd, "wb") as tmp, self._store.open(self._key) as src:
+            shutil.copyfileobj(src, tmp)
+        return self._path
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._path is not None:
+            self._path.unlink(missing_ok=True)
 
 
 def chunk_text(text: str) -> list[str]:
@@ -163,11 +214,12 @@ async def process_one(
     summary_svc: SummaryService,
     vstore: VectorStore,
     store: PaperStore,
+    object_store: ObjectStore,
     dry_run: bool,
     progress: Progress,
     task_id,
 ) -> PaperRecord | None:
-    paper_id = paper_id_for(pdf_path)
+    paper_id = _hash_file(pdf_path)
 
     if vstore.paper_exists(paper_id):
         progress.advance(task_id)
@@ -179,16 +231,25 @@ async def process_one(
         progress.log(f"[cyan]would ingest:[/cyan] {pdf_path.name} [{status}]")
         return None
 
+    source_filename = pdf_path.name
+    key = _object_key_for(paper_id)
+
     try:
-        text = await ocr_svc.extract(pdf_path)
+        text = await ocr_svc.extract(pdf_path, cache_key=paper_id)
         if not text.strip():
-            progress.log(f"[yellow]warn: empty OCR for {pdf_path.name}[/yellow]")
+            progress.log(f"[yellow]warn: empty OCR for {source_filename}[/yellow]")
             text = pdf_path.stem.replace("_", " ")
 
-        title, author, year, summary = await summarize_metadata(text, pdf_path.name, summary_svc)
+        title, author, year, summary = await summarize_metadata(text, source_filename, summary_svc)
         chunks = chunk_text(text)
         chunk_vecs = await embed_svc.embed_batch(chunks)
-        paper_vec = await paper_vector_for(text, pdf_path.name, title, summary, embed_svc)
+        paper_vec = await paper_vector_for(text, source_filename, title, summary, embed_svc)
+
+        # Bytes land in the ObjectStore the same way the live upload
+        # endpoint does it — no `dbs/input/` filesystem path is ever
+        # persisted onto the record.
+        with open(pdf_path, "rb") as f:
+            object_store.put(key, f, max_bytes=settings.max_pdf_bytes)
 
         chunk_records = [
             ChunkRecord(paper_id=paper_id, chunk_index=i, text=c, token_count=len(c) // 4)
@@ -197,15 +258,15 @@ async def process_one(
         vstore.add_chunks(paper_id, chunk_records, chunk_vecs)
         vstore.upsert_paper_vector(
             paper_id, paper_vec,
-            {"filename": pdf_path.name, "status": status,
-             "original_path": str(pdf_path.resolve()),
+            {"filename": source_filename, "status": status,
+             "source_filename": source_filename,
              "title": title or "", "author": author or "", "year": year or "",
              "summary": summary or ""},
         )
 
         record = PaperRecord(
-            id=paper_id, filename=pdf_path.name,
-            original_path=str(pdf_path.resolve()),
+            id=paper_id, filename=source_filename,
+            source_filename=source_filename,
             status=status,  # type: ignore[arg-type]
             title=title, author=author, year=year, summary=summary, ocr_cached=True,
             ingested_at=datetime.now(timezone.utc),
@@ -215,7 +276,8 @@ async def process_one(
         return record
 
     except Exception as exc:
-        progress.log(f"[red]ERROR {pdf_path.name}:[/red] {exc}")
+        progress.log(f"[red]ERROR {source_filename}:[/red] {exc}")
+        object_store.delete(key)  # failure hygiene — don't leak the bytes
         err_file = ROOT / "bulk_ingest_errors.jsonl"
         with open(err_file, "a") as f:
             f.write(json.dumps({"file": str(pdf_path), "error": str(exc)}) + "\n")
@@ -230,11 +292,12 @@ async def revector_one(
     summary_svc: SummaryService,
     vstore: VectorStore,
     store: PaperStore,
+    object_store: ObjectStore,
     dry_run: bool,
     progress: Progress,
     task_id,
 ) -> PaperRecord | None:
-    pdf_path = Path(record.original_path)
+    key = _object_key_for(record.id)
 
     if dry_run:
         progress.advance(task_id)
@@ -242,10 +305,11 @@ async def revector_one(
         return record
 
     try:
-        text = await ocr_svc.extract(pdf_path)
+        with _ScratchCopy(object_store, key) as pdf_path:
+            text = await ocr_svc.extract(pdf_path, cache_key=record.id)
         if not text.strip():
             progress.log(f"[yellow]warn: empty OCR for {record.filename}[/yellow]")
-            text = pdf_path.stem.replace("_", " ")
+            text = record.filename.replace("_", " ")
 
         title, author, year, summary = await summarize_metadata(text, record.filename, summary_svc)
         paper_vec = await paper_vector_for(text, record.filename, title, summary, embed_svc)
@@ -253,7 +317,7 @@ async def revector_one(
             record.id,
             paper_vec,
             {"filename": record.filename, "status": record.status,
-             "original_path": record.original_path,
+             "source_filename": record.source_filename,
              "title": title or "", "author": author or "", "year": year or "",
              "summary": summary or ""},
         )
@@ -271,7 +335,7 @@ async def revector_one(
         progress.log(f"[red]ERROR {record.filename}:[/red] {exc}")
         err_file = ROOT / "bulk_ingest_errors.jsonl"
         with open(err_file, "a") as f:
-            f.write(json.dumps({"file": record.original_path, "error": str(exc)}) + "\n")
+            f.write(json.dumps({"file": record.source_filename, "error": str(exc)}) + "\n")
         progress.advance(task_id)
         return None
 
@@ -281,7 +345,6 @@ async def finalize_library(
     store: PaperStore,
     clusterer: HierarchicalClusterer,
     namer: ClusterNamer,
-    fs_svc: FilesystemService,
 ) -> None:
     console.print("\nClustering papers…")
     paper_ids, vectors = vstore.get_all_paper_vectors()
@@ -306,18 +369,17 @@ async def finalize_library(
                     r = store.get(pid)
                     if r:
                         r.cluster_path = path
-                        r.symlink_name = fs_svc.make_symlink_name(r)
             else:
                 assign_paths(node.children, path)
 
     assign_paths(tree)
-
-    console.print("Rebuilding output tree…")
-    fs_svc.rebuild_tree(tree, store.as_dict())
     store.save()
 
     console.print(f"\n[bold green]Done![/bold green] {len(store)} papers in library.")
-    console.print(f"Output tree: {settings.output_dir}")
+    console.print(
+        "Tree is computed live by GET /api/tree from the records — "
+        "no output/ folder to rebuild."
+    )
 
     def print_tree(nodes: list, indent: int = 0) -> None:
         prefix = "  " * indent
@@ -343,12 +405,11 @@ async def main(dry_run: bool, reset: bool, revector: bool) -> None:
         if settings.papers_json.exists():
             settings.papers_json.unlink()
 
-    input_pdfs = [(p, "toread") for p in sorted(settings.input_dir.glob("*.pdf"))]
-    output_pdfs = [(p, "read") for p in sorted(settings.output_dir.rglob("*.pdf"))
-                   if not p.is_symlink()]
-    all_pdfs = input_pdfs + output_pdfs
-    console.print(f"Found [bold]{len(all_pdfs)}[/bold] PDFs "
-                  f"({len(input_pdfs)} to-read, {len(output_pdfs)} read)")
+    # `dbs/output/` is dead as a concept (plan §10.2) — there's nothing
+    # there to scan anymore. This tool only ever reads from the legacy
+    # drop-folder; ingested bytes live in the ObjectStore from here on.
+    all_pdfs = [(p, "toread") for p in sorted(LEGACY_INPUT_DIR.glob("*.pdf"))]
+    console.print(f"Found [bold]{len(all_pdfs)}[/bold] PDFs in {LEGACY_INPUT_DIR}")
 
     if dry_run:
         console.print("[bold yellow]Dry run — no API calls will be made.[/bold yellow]")
@@ -357,9 +418,9 @@ async def main(dry_run: bool, reset: bool, revector: bool) -> None:
     embed_svc = EmbeddingService()
     summary_svc = SummaryService()
     vstore = VectorStore(settings.chroma_persist_dir)
+    object_store = LocalObjectStore(settings.objects_dir)
     clusterer = HierarchicalClusterer()
     namer = ClusterNamer()
-    fs_svc = FilesystemService()
 
     store = PaperStore()
     store.load()
@@ -389,7 +450,7 @@ async def main(dry_run: bool, reset: bool, revector: bool) -> None:
                 await asyncio.gather(
                     *[
                         revector_one(r, ocr_svc, embed_svc, summary_svc, vstore, store,
-                                     dry_run, progress, revector_task)
+                                     object_store, dry_run, progress, revector_task)
                         for r in batch
                     ]
                 )
@@ -398,7 +459,7 @@ async def main(dry_run: bool, reset: bool, revector: bool) -> None:
             console.print("[bold yellow]Dry run complete. Nothing written.[/bold yellow]")
             return
 
-        await finalize_library(vstore, store, clusterer, namer, fs_svc)
+        await finalize_library(vstore, store, clusterer, namer)
         return
 
     with progress:
@@ -409,7 +470,7 @@ async def main(dry_run: bool, reset: bool, revector: bool) -> None:
             await asyncio.gather(
                 *[
                     process_one(p, s, ocr_svc, embed_svc, summary_svc, vstore, store,
-                                dry_run, progress, ingest_task)
+                                object_store, dry_run, progress, ingest_task)
                     for p, s in batch
                 ]
             )
@@ -420,7 +481,7 @@ async def main(dry_run: bool, reset: bool, revector: bool) -> None:
 
     # Save metadata before clustering
     store.save()
-    await finalize_library(vstore, store, clusterer, namer, fs_svc)
+    await finalize_library(vstore, store, clusterer, namer)
 
 
 if __name__ == "__main__":

@@ -6,8 +6,8 @@ import {
 import clsx from "clsx";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Citation, PaperRecord, SSEEvent } from "../api/client";
-import { getPaperUrl, streamChat, uploadPaper } from "../api/client";
+import type { ApiMode, Citation, PaperRecord, SSEEvent } from "../api/client";
+import { formatBytes, getMe, getPaperUrl, streamChat, uploadPaper } from "../api/client";
 
 // ── Message types ───────────────────────────────────────────────────────────
 type AgentRole = "oracle" | "librarian";
@@ -37,6 +37,7 @@ export function AgentPortal({
   hideHeader = false,
   variant = "panel",
   prefill,
+  apiMode = "normal",
   disableUpload = false,
 }: {
   onUploadDone?: () => void;
@@ -55,6 +56,8 @@ export function AgentPortal({
   variant?: "panel" | "float";
   /** Text to drop into the omnibar + focus signal — bump `token` to re-trigger for the same text. */
   prefill?: { text: string; token: number };
+  /** Observer mode reads and chats through the public tour API. */
+  apiMode?: ApiMode;
   /** Observer mode: chat still works, but uploads mutate a single-user backend. */
   disableUpload?: boolean;
 }) {
@@ -72,6 +75,7 @@ export function AgentPortal({
   const [uploadStatus, setUpStat] = useState<"read" | "toread">("toread");
   const [open, setOpen]           = useState(false);
   const [dragging, setDragging]   = useState(false);
+  const [usage, setUsage]         = useState<{ used: number; quota: number } | null>(null);
   const bottomRef  = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
   const inputRef   = useRef<HTMLInputElement>(null);
@@ -131,11 +135,21 @@ export function AgentPortal({
     if (open) bottomRef.current?.scrollIntoView();
   }, [open]);
 
+  useEffect(() => {
+    if (disableUpload || apiMode !== "normal") return;
+    let cancelled = false;
+    getMe()
+      .then(me => {
+        if (!cancelled) setUsage({ used: me.storage_used_bytes, quota: me.storage_quota_bytes });
+      })
+      .catch(() => { if (!cancelled) setUsage(null); });
+    return () => { cancelled = true; };
+  }, [apiMode, disableUpload]);
+
   // "Ask Oracle" from a StarCard drops a prefilled question into the omnibar
   // and focuses it — bump `prefill.token` to re-trigger for the same text.
   useEffect(() => {
     if (!prefill) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing to an external token, not derivable during render
     setInput(prefill.text);
     if (isFloat) setOpen(true);
     inputRef.current?.focus();
@@ -214,7 +228,7 @@ export function AgentPortal({
         setBusy(false);
       }
       scrollDown();
-    }, history);
+    }, history, apiMode);
   };
 
   // ── Upload ────────────────────────────────────────────────────────────────
@@ -256,16 +270,19 @@ export function AgentPortal({
           }));
           onUploadArrive?.(p.cluster_path ?? "");
           onUploadDone?.();
+          getMe()
+            .then(me => setUsage({ used: me.storage_used_bytes, quota: me.storage_quota_bytes }))
+            .catch(() => setUsage(null));
         }
         scrollDown();
       });
-    } catch {
+    } catch (err) {
       onUploadCancel?.();
       patchById(pId, m => ({
         ...m,
         streaming: false,
         progress: undefined,
-        content: "Upload failed — check the backend logs.",
+        content: err instanceof Error ? err.message : "Upload failed — check the backend logs.",
       }));
     }
     setBusy(false);
@@ -282,6 +299,7 @@ export function AgentPortal({
           msg={m}
           onOpenPaper={onOpenPaper}
           onOpenPaperId={onOpenPaperId}
+          apiMode={apiMode}
         />
       ))}
       <div ref={bottomRef} />
@@ -384,6 +402,17 @@ export function AgentPortal({
             <Paperclip size={15} />
             {!isFloat && <span className="hidden xl:inline text-[11px] font-semibold">Upload PDF</span>}
           </button>
+        )}
+        {!disableUpload && usage && (
+          <div className="hidden sm:block w-24 shrink-0 space-y-1">
+            <div className="h-1 overflow-hidden rounded-full bg-rim">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-cyan-600 to-cyan-400"
+                style={{ width: `${usage.quota > 0 ? Math.min(100, (usage.used / usage.quota) * 100) : 0}%` }}
+              />
+            </div>
+            <p className="truncate text-[9px] text-muted">{formatBytes(usage.used)} used</p>
+          </div>
         )}
         <input
           ref={inputRef}
@@ -499,10 +528,12 @@ function MsgBubble({
   msg,
   onOpenPaper,
   onOpenPaperId,
+  apiMode,
 }: {
   msg: Msg;
   onOpenPaper?: (paper: PaperRecord) => void;
   onOpenPaperId?: (paperId: string) => void;
+  apiMode: ApiMode;
 }) {
   if (msg.role === "system") {
     return (
@@ -594,7 +625,7 @@ function MsgBubble({
         {msg.papers && msg.papers.length > 0 && (
           <div className="space-y-1.5">
             {msg.papers.map(p => (
-              <PaperCard key={p.id} paper={p} onOpenPaper={onOpenPaper} />
+              <PaperCard key={p.id} paper={p} onOpenPaper={onOpenPaper} apiMode={apiMode} />
             ))}
           </div>
         )}
@@ -603,7 +634,7 @@ function MsgBubble({
         {msg.citations && msg.citations.length > 0 && (
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             {msg.citations.map(c => (
-              <CitationChip key={c.paper_id} c={c} onOpenPaperId={onOpenPaperId} />
+              <CitationChip key={c.paper_id} c={c} onOpenPaperId={onOpenPaperId} apiMode={apiMode} />
             ))}
           </div>
         )}
@@ -616,9 +647,11 @@ function MsgBubble({
 function PaperCard({
   paper: p,
   onOpenPaper,
+  apiMode,
 }: {
   paper: PaperRecord;
   onOpenPaper?: (paper: PaperRecord) => void;
+  apiMode: ApiMode;
 }) {
   const parts = p.cluster_path?.split("/") ?? [];
   const content = (
@@ -666,7 +699,7 @@ function PaperCard({
 
   return (
     <a
-      href={getPaperUrl(p.id)}
+      href={getPaperUrl(p.id, apiMode)}
       target="_blank"
       rel="noreferrer"
       className={className}
@@ -677,7 +710,15 @@ function PaperCard({
 }
 
 // ── Citation chip ────────────────────────────────────────────────────────────
-function CitationChip({ c, onOpenPaperId }: { c: Citation; onOpenPaperId?: (paperId: string) => void }) {
+function CitationChip({
+  c,
+  onOpenPaperId,
+  apiMode,
+}: {
+  c: Citation;
+  onOpenPaperId?: (paperId: string) => void;
+  apiMode: ApiMode;
+}) {
   const className = "inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/15 text-violet-300 hover:border-violet-400/35 hover:bg-violet-500/15 transition-colors";
   const content = (
     <>
@@ -695,7 +736,7 @@ function CitationChip({ c, onOpenPaperId }: { c: Citation; onOpenPaperId?: (pape
   }
 
   return (
-    <a href={getPaperUrl(c.paper_id)} target="_blank" rel="noreferrer" className={className}>
+    <a href={getPaperUrl(c.paper_id, apiMode)} target="_blank" rel="noreferrer" className={className}>
       {content}
     </a>
   );

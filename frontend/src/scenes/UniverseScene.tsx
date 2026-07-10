@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { StarfieldCanvas } from "../components/StarfieldCanvas";
 import { Gate } from "../components/Gate";
-import { listPapers } from "../api/client";
-import { computeGalaxyStats, FAKE_GALAXIES } from "../lib/galaxy";
+import { getTourGalaxy } from "../api/client";
+import { FAKE_GALAXIES } from "../lib/galaxy";
 import type { Session } from "../auth/session";
 
 const HUE_DOTS = ["#22d3ee", "#a78bfa", "#34d399", "#f59e0b", "#22d3ee"];
@@ -36,11 +36,14 @@ export function UniverseScene({
 
   useEffect(() => {
     let cancelled = false;
-    listPapers()
-      .then(papers => {
+    getTourGalaxy()
+      .then(galaxy => {
         if (cancelled) return;
-        const stats = computeGalaxyStats(papers);
-        setOwnerStats(stats);
+        setOwnerStats({
+          stars: galaxy.stars,
+          ignited: galaxy.ignited,
+          constellations: galaxy.constellations,
+        });
       })
       .catch(() => { if (!cancelled) setOwnerFailed(true); });
     return () => { cancelled = true; };
