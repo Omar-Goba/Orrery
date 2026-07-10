@@ -11,10 +11,19 @@ from backend.auth.deps import get_db, require_keeper
 from backend.auth.models import ROLE_VOYAGER, User
 from backend.config import settings
 from backend.models import QuotaPatchRequest, StoredFileEntry, VoyagerStorageSummary
+from backend.services.reembed_job import reembed_status
 from backend.services.streaming import stream_object
 from backend.space import SpaceRegistry, get_space_registry
 
 router = APIRouter(prefix="/api/keeper", tags=["keeper"])
+
+
+@router.get("/reembed/status")
+async def get_reembed_status(
+    _keeper: User = Depends(require_keeper),
+) -> dict:
+    return reembed_status()
+
 
 def _voyager_or_404(handle: str, db: Session) -> User:
     user = db.exec(

@@ -7,20 +7,21 @@ from loguru import logger
 from backend.config import settings
 from backend.services.llm import client_for_role
 
-EXPECTED_DIM = 1024
-
 
 class EmbeddingService:
     def __init__(self) -> None:
         self._client = client_for_role(settings.llm_embedder)
         self._model = settings.llm_embedder.model
+        self._dim: int | None = None
 
-    async def verify(self) -> None:
+    @property
+    def dim(self) -> int | None:
+        return self._dim
+
+    async def verify(self) -> int:
         vec = await self.embed_text("warmup")
-        if len(vec) != EXPECTED_DIM:
-            raise RuntimeError(
-                f"Expected {EXPECTED_DIM}-dim embeddings from {self._model}, got {len(vec)}"
-            )
+        self._dim = len(vec)
+        return self._dim
 
     async def embed_text(self, text: str) -> list[float]:
         # Progressively truncate if the model rejects the input length
@@ -55,9 +56,18 @@ class EmbeddingService:
             await asyncio.sleep(0)  # yield to event loop
         return results
 
-    def paper_vector(self, chunk_vectors: list[list[float]]) -> list[float]:
+    def paper_vector(
+        self,
+        chunk_vectors: list[list[float]],
+        *,
+        dim: int | None = None,
+    ) -> list[float]:
         if not chunk_vectors:
-            return [0.0] * EXPECTED_DIM
+            resolved_dim = dim or self._dim
+            if resolved_dim is None:
+                raise RuntimeError("Embedding dimension is unknown; call verify() first or pass dim")
+            return [0.0] * resolved_dim
+        self._dim = len(chunk_vectors[0])
         matrix = np.array(chunk_vectors, dtype=np.float32)
         mean = matrix.mean(axis=0)
         norm = np.linalg.norm(mean)

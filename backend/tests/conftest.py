@@ -49,6 +49,17 @@ def _reset_rate_limiters() -> None:
     tour_chat_limiter.reset()
 
 
+@pytest.fixture(autouse=True)
+def _stub_embedding_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.services.embeddings import EmbeddingService
+
+    async def _verify(self: EmbeddingService) -> int:
+        self._dim = 3
+        return 3
+
+    monkeypatch.setattr(EmbeddingService, "verify", _verify)
+
+
 @pytest.fixture()
 def tmp_dbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point settings.dbs_dir (and the auth engine) at a fresh tmp directory."""

@@ -38,8 +38,14 @@ from backend.models import (
     UploadResponse,
 )
 from backend.services.embeddings import EmbeddingService
+from backend.services.embedder_registry import (
+    EmbedderIdentity,
+    load_embedder_identity,
+    save_embedder_identity,
+)
 from backend.services.objectstore import LocalObjectStore, ObjectSizeLimitExceeded, ObjectStore
 from backend.services.logging_setup import configure_logging
+from backend.services.reembed_job import ReembedJob
 from backend.services.retrieval_defaults import MAIN_NEIGHBOR_K
 from backend.services.ocr import OCRService
 from backend.services.similarity import top_k_neighbors
@@ -47,7 +53,13 @@ from backend.services.sse import sse
 from backend.services.streaming import CHUNK_SIZE, stream_object
 from backend.services.tree import build_tree
 from backend.services.vectorstore import VectorStore
-from backend.space import SpaceRegistry, UserSpace, current_space
+from backend.space import (
+    SpaceRegistry,
+    UserSpace,
+    current_space,
+    get_space_registry,
+    wait_for_ingest_gate,
+)
 from backend.tour import router as tour_router
 
 # ── shared singletons ──────────────────────────────────────────────────────
@@ -77,10 +89,39 @@ async def lifespan(app: FastAPI):
 
     _ocr_svc = OCRService()
     _embed_svc = EmbeddingService()
+    embed_dim = await _embed_svc.verify()
+    current_identity = EmbedderIdentity.current(
+        settings.llm_embedder,
+        embed_dim,
+        active_persist_dir=settings.chroma_persist_dir,
+    )
+    previous_identity = load_embedder_identity(settings.chroma_persist_dir)
+    active_chroma_dir = settings.chroma_persist_dir
+    if previous_identity is None:
+        save_embedder_identity(settings.chroma_persist_dir, current_identity)
+    else:
+        active_chroma_dir = previous_identity.active_path(settings.chroma_persist_dir)
+        if previous_identity.same_embedder(current_identity):
+            if previous_identity.dim != current_identity.dim:
+                raise RuntimeError(
+                    "Embedding dimension drift for unchanged embedder "
+                    f"{current_identity.base_url} {current_identity.model}: "
+                    f"recorded={previous_identity.dim} current={current_identity.dim}"
+                )
+        else:
+            logger.warning(
+                "Embedder identity changed from base_url={} model={} dim={} to base_url={} model={} dim={}; startup will continue on the old store while re-embed runs",
+                previous_identity.base_url,
+                previous_identity.model,
+                previous_identity.dim,
+                current_identity.base_url,
+                current_identity.model,
+                current_identity.dim,
+            )
     # One shared Chroma client for the whole process (plan §4.2/§4.4). Every
     # per-user `VectorStore` built by `SpaceRegistry` uses this same client,
     # never a client per user.
-    _chroma_client = VectorStore.build_client(settings.chroma_persist_dir)
+    _chroma_client = VectorStore.build_client(active_chroma_dir)
     _object_store = LocalObjectStore(settings.objects_dir)
 
     app.state.space_registry = SpaceRegistry(
@@ -89,6 +130,17 @@ async def lifespan(app: FastAPI):
         ocr_svc=_ocr_svc,
         embed_svc=_embed_svc,
     )
+    if previous_identity is not None and not previous_identity.same_embedder(current_identity):
+        app.state.reembed_task = asyncio.create_task(
+            ReembedJob(
+                registry=app.state.space_registry,
+                old_client=_chroma_client,
+                old_persist_dir=active_chroma_dir,
+                embed_svc=_embed_svc,
+                new_identity=current_identity,
+                chroma_persist_dir=settings.chroma_persist_dir,
+            ).run()
+        )
     logger.info("Backend startup complete")
     yield
 
@@ -265,6 +317,8 @@ async def chat(body: ChatRequest, space: UserSpace = Depends(current_space)):
 async def upload_paper(
     file: UploadFile,
     status: str = Form("toread"),
+    _gate: None = Depends(wait_for_ingest_gate),
+    registry: SpaceRegistry = Depends(get_space_registry),
     space: UserSpace = Depends(current_space),
 ):
     if file.content_type != "application/pdf" and not (file.filename or "").endswith(".pdf"):
@@ -353,13 +407,16 @@ async def upload_paper(
     )
 
     # Kick off ingest in background
-    asyncio.create_task(_run_ingest(space, paper_id, key, source_filename, status, queue))
+    asyncio.create_task(
+        _run_ingest(registry, space.user_id, paper_id, key, source_filename, status, queue)
+    )
 
     return UploadResponse(job_id=job_id)
 
 
 async def _run_ingest(
-    space: UserSpace,
+    registry: SpaceRegistry,
+    user_id: str,
     paper_id: str,
     key: str,
     source_filename: str,
@@ -369,24 +426,31 @@ async def _run_ingest(
     def cb(step: str, pct: int) -> None:
         queue.put_nowait({"type": "progress", "step": step, "pct": pct})
 
+    space: UserSpace | None = None
     try:
+        await registry.wait_for_ingest_allowed()
+        space = await registry.get_locked(user_id)
         logger.info("Ingest started user_id={} paper_id={}", space.user_id, paper_id)
         record = await space.librarian.ingest(paper_id, key, source_filename, status, cb)
         logger.info("Ingest finished user_id={} paper_id={}", space.user_id, paper_id)
         queue.put_nowait({"type": "done", "paper": record.model_dump(mode="json")})
     except Exception as exc:
-        logger.exception("Ingest failed user_id={} paper_id={}", space.user_id, paper_id)
+        logger.exception("Ingest failed user_id={} paper_id={}", user_id, paper_id)
         # Failure hygiene (plan §9): don't leak the object if ingest blows
         # up after the bytes already landed.
-        stat = space.objects.stat(key)
-        space.objects.delete(key)
-        if stat is not None:
-            decrement_storage_used(space.user_id, stat.size_bytes)
+        if space is not None:
+            stat = space.objects.stat(key)
+            space.objects.delete(key)
+            if stat is not None:
+                decrement_storage_used(space.user_id, stat.size_bytes)
         queue.put_nowait({"type": "error", "message": str(exc)})
 
 
 @app.post("/api/reindex")
-async def reindex(space: UserSpace = Depends(current_space)):
+async def reindex(
+    _gate: None = Depends(wait_for_ingest_gate),
+    space: UserSpace = Depends(current_space),
+):
     async def generate() -> AsyncGenerator[str, None]:
         queue: asyncio.Queue = asyncio.Queue()
 
