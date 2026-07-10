@@ -8,6 +8,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ApiMode, Citation, PaperRecord, SSEEvent } from "../api/client";
 import { formatBytes, getMe, getPaperUrl, streamChat, uploadPaper } from "../api/client";
+import { useSSEStream } from "../hooks/useSSEStream";
 
 // ── Message types ───────────────────────────────────────────────────────────
 type AgentRole = "oracle" | "librarian";
@@ -79,7 +80,7 @@ export function AgentPortal({
   const bottomRef  = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
   const inputRef   = useRef<HTMLInputElement>(null);
-  const abortRef   = useRef<(() => void) | null>(null);
+  const stream     = useSSEStream();
 
   // ── Float-only: ⌘K / "/" focuses the omnibar ──────────────────────────────
   useEffect(() => {
@@ -191,7 +192,7 @@ export function AgentPortal({
         content: m.content,
       }));
 
-    abortRef.current = streamChat(text, (ev: SSEEvent) => {
+    stream.start(() => streamChat(text, (ev: SSEEvent) => {
       // Detect agent from first event
       if (!agentDetected) {
         agentDetected = true;
@@ -228,7 +229,7 @@ export function AgentPortal({
         setBusy(false);
       }
       scrollDown();
-    }, history, apiMode);
+    }, history, apiMode));
   };
 
   // ── Upload ────────────────────────────────────────────────────────────────

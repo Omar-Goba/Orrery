@@ -3,6 +3,7 @@ import { UniverseScene } from "./scenes/UniverseScene";
 import { GalaxyScene } from "./scenes/GalaxyScene";
 import { WarpOverlay } from "./scenes/WarpOverlay";
 import { getSession, logout, OWNER_USERNAME, refreshSession, type GalaxyMode } from "./auth/session";
+import { readJSON, writeJSON } from "./lib/storage";
 
 type GalaxyId = string; // "omar" | any fake/visitor username
 
@@ -22,13 +23,7 @@ function loadInitialScene(): DisplayScene {
     sessionStorage.removeItem(SCENE_KEY);
     return { name: "universe" };
   }
-  try {
-    const raw = sessionStorage.getItem(SCENE_KEY);
-    if (raw) return JSON.parse(raw) as DisplayScene;
-  } catch {
-    // fall through to default
-  }
-  return { name: "universe" };
+  return readJSON<DisplayScene>(sessionStorage, SCENE_KEY) ?? { name: "universe" };
 }
 
 export default function App() {
@@ -37,7 +32,7 @@ export default function App() {
   const [session, setSession] = useState(() => getSession());
 
   useEffect(() => {
-    sessionStorage.setItem(SCENE_KEY, JSON.stringify(displayed));
+    writeJSON(sessionStorage, SCENE_KEY, displayed);
   }, [displayed]);
 
   useEffect(() => {
