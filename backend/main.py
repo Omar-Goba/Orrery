@@ -162,6 +162,11 @@ app.include_router(tour_router)
 app.include_router(keeper_router)
 
 
+@app.get("/api/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 def _object_key_for(paper_id: str) -> str:
     return f"papers/{paper_id}.pdf"
 

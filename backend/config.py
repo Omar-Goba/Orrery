@@ -1,5 +1,5 @@
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,9 +40,15 @@ class Settings(BaseSettings):
         default_factory=lambda: RoleConfig(model="gpt-4o-mini")
     )
 
-    dbs_dir: Path = Path("./dbs")
-    chroma_persist_dir: Path = Path("./dbs/chroma")
-    log_dir: Path = Field(default=Path("./dbs/logs"), validation_alias="ORRERY_LOG_DIR")
+    dbs_dir: Path = Field(
+        default=Path("/data"),
+        validation_alias=AliasChoices("ORRERY_DBS_DIR", "DBS_DIR"),
+    )
+    chroma_persist_dir: Path = Field(
+        default=Path("/data/chroma"),
+        validation_alias=AliasChoices("ORRERY_CHROMA_PERSIST_DIR", "CHROMA_PERSIST_DIR"),
+    )
+    log_dir_override: Path | None = Field(default=None, validation_alias="ORRERY_LOG_DIR")
     log_level: str = Field(default="INFO", validation_alias="ORRERY_LOG_LEVEL")
 
     backend_port: int = 8000
@@ -89,6 +95,10 @@ class Settings(BaseSettings):
         nothing outside `backend/services/objectstore.py` should read or
         write here directly."""
         return self.dbs_dir / "objects"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.log_dir_override or self.dbs_dir / "logs"
 
     @property
     def ocr_cache_dir(self) -> Path:
