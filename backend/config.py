@@ -1,5 +1,5 @@
 from pathlib import Path
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     )
 
     mistral_api_key: str = ""
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY", exclude=True)
     llm_summary: RoleConfig = Field(
         default_factory=lambda: RoleConfig(model="gpt-4o-mini")
     )
@@ -39,6 +40,21 @@ class Settings(BaseSettings):
     llm_master: RoleConfig = Field(
         default_factory=lambda: RoleConfig(model="gpt-4o-mini")
     )
+
+    @model_validator(mode="after")
+    def apply_legacy_openai_key(self) -> "Settings":
+        if not self.openai_api_key:
+            return self
+        for role in (
+            self.llm_summary,
+            self.llm_namer,
+            self.llm_oracle,
+            self.llm_curator,
+            self.llm_master,
+        ):
+            if not role.api_key and role.base_url.rstrip("/") == "https://api.openai.com/v1":
+                role.api_key = self.openai_api_key
+        return self
 
     dbs_dir: Path = Field(
         default=Path("/data"),
