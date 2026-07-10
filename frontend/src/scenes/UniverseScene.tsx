@@ -4,7 +4,7 @@ import { StarfieldCanvas } from "../components/StarfieldCanvas";
 import { Gate } from "../components/Gate";
 import { getTourGalaxy } from "../api/client";
 import { FAKE_GALAXIES } from "../lib/galaxy";
-import type { Session } from "../auth/session";
+import { OWNER_USERNAME, type Session } from "../auth/session";
 
 const HUE_DOTS = ["#22d3ee", "#a78bfa", "#34d399", "#f59e0b", "#22d3ee"];
 
@@ -33,6 +33,11 @@ export function UniverseScene({
   const [gateVariant, setGateVariant] = useState<"login" | "signup" | null>(null);
   const [sealedToast, setSealedToast] = useState<string | null>(null);
   const [wiggling, setWiggling] = useState<string | null>(null);
+  const isKeeperHome = session?.role === "keeper" && session.username === OWNER_USERNAME;
+  const enterOwnerGalaxy = () => {
+    if (isKeeperHome) onContinue(session.username);
+    else onVisitObserver();
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -83,10 +88,10 @@ export function UniverseScene({
                 open to visitors
               </span>
               <button
-                onClick={onVisitObserver}
+                onClick={enterOwnerGalaxy}
                 className="mt-2 rounded-lg bg-cyan-500/15 px-3.5 py-1.5 text-[12px] font-semibold text-cyan-400 hover:bg-cyan-500/25 transition-colors"
               >
-                Visit as observer
+                {isKeeperHome ? "Enter your galaxy" : "Visit as observer"}
               </button>
             </div>
           </div>
@@ -122,10 +127,10 @@ export function UniverseScene({
                 : "reading the sky…"}
           </p>
           <button
-            onClick={onVisitObserver}
+            onClick={enterOwnerGalaxy}
             className="mt-3 rounded-lg bg-cyan-500/15 px-3.5 py-1.5 text-[12px] font-semibold text-cyan-400"
           >
-            Visit as observer
+            {isKeeperHome ? "Enter your galaxy" : "Visit as observer"}
           </button>
         </div>
         {FAKE_GALAXIES.map(g => (
