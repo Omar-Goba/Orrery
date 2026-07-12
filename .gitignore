@@ -10,6 +10,8 @@ dbs/orrery.db
 dbs/objects/
 dbs/users/
 dbs/output/
+dbs/embedder_identity.json
+dbs/logs/
 dbs/input/*.pdf
 bulk_ingest_errors.jsonl
 .backend.dev.log
