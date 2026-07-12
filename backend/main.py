@@ -1,19 +1,20 @@
 from __future__ import annotations
 import asyncio
 import hashlib
-import json
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncGenerator, BinaryIO
+from typing import AsyncGenerator
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from loguru import logger
 
+from backend.auth.ratelimit import client_log_limiter
 from backend.auth.db import init_db
 from backend.auth.router import router as auth_router
 from backend.accounting import (
@@ -25,8 +26,10 @@ from backend.accounting import (
 )
 from backend.config import settings
 from backend.keeper import router as keeper_router
+from backend.middleware import RequestIDMiddleware
 from backend.models import (
     ChatRequest,
+    ClientLogRequest,
     PaperRecord,
     Recommendation,
     SimilarityNeighbor,
@@ -35,12 +38,28 @@ from backend.models import (
     UploadResponse,
 )
 from backend.services.embeddings import EmbeddingService
+from backend.services.embedder_registry import (
+    EmbedderIdentity,
+    load_embedder_identity,
+    save_embedder_identity,
+)
 from backend.services.objectstore import LocalObjectStore, ObjectSizeLimitExceeded, ObjectStore
+from backend.services.logging_setup import configure_logging
+from backend.services.reembed_job import ReembedJob
+from backend.services.retrieval_defaults import MAIN_NEIGHBOR_K
 from backend.services.ocr import OCRService
 from backend.services.similarity import top_k_neighbors
+from backend.services.sse import sse
+from backend.services.streaming import CHUNK_SIZE, stream_object
 from backend.services.tree import build_tree
 from backend.services.vectorstore import VectorStore
-from backend.space import SpaceRegistry, UserSpace, current_space
+from backend.space import (
+    SpaceRegistry,
+    UserSpace,
+    current_space,
+    get_space_registry,
+    wait_for_ingest_gate,
+)
 from backend.tour import router as tour_router
 
 # ── shared singletons ──────────────────────────────────────────────────────
@@ -58,12 +77,11 @@ class UploadJob:
 # in-memory job registry  {job_id: UploadJob}
 _jobs: dict[str, UploadJob] = {}
 
-_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MiB
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings.log_dir, settings.log_level)
     global _ocr_svc, _embed_svc, _object_store
+    logger.info("Backend startup begins")
     settings.dbs_dir.mkdir(parents=True, exist_ok=True)
     _jobs.clear()
 
@@ -71,10 +89,39 @@ async def lifespan(app: FastAPI):
 
     _ocr_svc = OCRService()
     _embed_svc = EmbeddingService()
+    embed_dim = await _embed_svc.verify()
+    current_identity = EmbedderIdentity.current(
+        settings.llm_embedder,
+        embed_dim,
+        active_persist_dir=settings.chroma_persist_dir,
+    )
+    previous_identity = load_embedder_identity(settings.chroma_persist_dir)
+    active_chroma_dir = settings.chroma_persist_dir
+    if previous_identity is None:
+        save_embedder_identity(settings.chroma_persist_dir, current_identity)
+    else:
+        active_chroma_dir = previous_identity.active_path(settings.chroma_persist_dir)
+        if previous_identity.same_embedder(current_identity):
+            if previous_identity.dim != current_identity.dim:
+                raise RuntimeError(
+                    "Embedding dimension drift for unchanged embedder "
+                    f"{current_identity.base_url} {current_identity.model}: "
+                    f"recorded={previous_identity.dim} current={current_identity.dim}"
+                )
+        else:
+            logger.warning(
+                "Embedder identity changed from base_url={} model={} dim={} to base_url={} model={} dim={}; startup will continue on the old store while re-embed runs",
+                previous_identity.base_url,
+                previous_identity.model,
+                previous_identity.dim,
+                current_identity.base_url,
+                current_identity.model,
+                current_identity.dim,
+            )
     # One shared Chroma client for the whole process (plan §4.2/§4.4). Every
     # per-user `VectorStore` built by `SpaceRegistry` uses this same client,
     # never a client per user.
-    _chroma_client = VectorStore.build_client(settings.chroma_persist_dir)
+    _chroma_client = VectorStore.build_client(active_chroma_dir)
     _object_store = LocalObjectStore(settings.objects_dir)
 
     app.state.space_registry = SpaceRegistry(
@@ -83,10 +130,24 @@ async def lifespan(app: FastAPI):
         ocr_svc=_ocr_svc,
         embed_svc=_embed_svc,
     )
+    if previous_identity is not None and not previous_identity.same_embedder(current_identity):
+        app.state.reembed_task = asyncio.create_task(
+            ReembedJob(
+                registry=app.state.space_registry,
+                old_client=_chroma_client,
+                old_persist_dir=active_chroma_dir,
+                embed_svc=_embed_svc,
+                new_identity=current_identity,
+                chroma_persist_dir=settings.chroma_persist_dir,
+            ).run()
+        )
+    logger.info("Backend startup complete")
     yield
 
 
 app = FastAPI(title="Project Library", lifespan=lifespan)
+
+app.add_middleware(RequestIDMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,25 +162,13 @@ app.include_router(tour_router)
 app.include_router(keeper_router)
 
 
+@app.get("/api/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 def _object_key_for(paper_id: str) -> str:
     return f"papers/{paper_id}.pdf"
-
-
-def _stream_object(stream: BinaryIO, chunk_size: int = _UPLOAD_CHUNK_SIZE):
-    """Read an ObjectStore stream in fixed-size chunks, closing it when done.
-
-    Never `FileResponse(path)` — this is the streaming seam that makes the
-    PDF-serving route MinIO-ready and lets a future authz layer sit in front
-    of it without touching how bytes actually move (plan §10.1 rule #3).
-    """
-    try:
-        while True:
-            chunk = stream.read(chunk_size)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        stream.close()
 
 
 def _quota_response(exc: QuotaExceeded) -> JSONResponse:
@@ -169,7 +218,7 @@ async def get_paper_file(paper_id: str, space: UserSpace = Depends(current_space
         "Content-Length": str(stat.size_bytes),
     }
     return StreamingResponse(
-        _stream_object(stream),
+        stream_object(stream),
         media_type="application/pdf",
         headers=headers,
     )
@@ -189,6 +238,7 @@ async def delete_paper(paper_id: str, space: UserSpace = Depends(current_space))
     space.vstore.delete_paper(paper_id)
     space.papers.delete(paper_id)
     await space.papers.save()
+    logger.info("Paper deleted user_id={} paper_id={}", space.user_id, paper_id)
     return Response(status_code=204)
 
 
@@ -204,7 +254,7 @@ async def get_tree(space: UserSpace = Depends(current_space)):
 @app.get("/api/similarity", response_model=dict[str, list[SimilarityNeighbor]])
 async def get_similarity(space: UserSpace = Depends(current_space)):
     ids, vectors = space.vstore.get_all_paper_vectors()
-    return top_k_neighbors(ids, vectors, k=6)
+    return top_k_neighbors(ids, vectors, k=MAIN_NEIGHBOR_K)
 
 
 @app.get("/api/recommendations", response_model=list[Recommendation])
@@ -231,7 +281,24 @@ async def update_paper_status(
     record.status = body.status  # type: ignore[assignment]
     space.vstore.update_paper_status(paper_id, body.status)
     await space.papers.save()
+    logger.info("Paper status updated user_id={} paper_id={} status={}", space.user_id, paper_id, body.status)
     return record
+
+
+@app.post("/api/client-log", status_code=204)
+async def client_log(body: ClientLogRequest, request: Request) -> Response:
+    client_host = request.client.host if request.client else "unknown"
+    if not client_log_limiter.allow(client_host):
+        raise HTTPException(429, "Too many client log events")
+    sink = logger.warning if body.level == "warning" else logger.error
+    sink(
+        "Client log source=frontend level={} url={} message={} stack={}",
+        body.level,
+        body.url,
+        body.message,
+        body.stack or "",
+    )
+    return Response(status_code=204)
 
 
 @app.post("/api/chat")
@@ -255,6 +322,8 @@ async def chat(body: ChatRequest, space: UserSpace = Depends(current_space)):
 async def upload_paper(
     file: UploadFile,
     status: str = Form("toread"),
+    _gate: None = Depends(wait_for_ingest_gate),
+    registry: SpaceRegistry = Depends(get_space_registry),
     space: UserSpace = Depends(current_space),
 ):
     if file.content_type != "application/pdf" and not (file.filename or "").endswith(".pdf"):
@@ -286,7 +355,7 @@ async def upload_paper(
     try:
         with open(tmp_fd, "wb") as spool:
             while True:
-                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+                chunk = await file.read(CHUNK_SIZE)
                 if not chunk:
                     break
                 size += len(chunk)
@@ -333,15 +402,26 @@ async def upload_paper(
     job_id = str(uuid.uuid4())
     queue: asyncio.Queue = asyncio.Queue()
     _jobs[job_id] = UploadJob(user_id=space.user_id, queue=queue)
+    logger.info(
+        "Upload accepted user_id={} paper_id={} job_id={} filename={} size_bytes={}",
+        space.user_id,
+        paper_id,
+        job_id,
+        source_filename,
+        size,
+    )
 
     # Kick off ingest in background
-    asyncio.create_task(_run_ingest(space, paper_id, key, source_filename, status, queue))
+    asyncio.create_task(
+        _run_ingest(registry, space.user_id, paper_id, key, source_filename, status, queue)
+    )
 
     return UploadResponse(job_id=job_id)
 
 
 async def _run_ingest(
-    space: UserSpace,
+    registry: SpaceRegistry,
+    user_id: str,
     paper_id: str,
     key: str,
     source_filename: str,
@@ -351,21 +431,31 @@ async def _run_ingest(
     def cb(step: str, pct: int) -> None:
         queue.put_nowait({"type": "progress", "step": step, "pct": pct})
 
+    space: UserSpace | None = None
     try:
+        await registry.wait_for_ingest_allowed()
+        space = await registry.get_locked(user_id)
+        logger.info("Ingest started user_id={} paper_id={}", space.user_id, paper_id)
         record = await space.librarian.ingest(paper_id, key, source_filename, status, cb)
+        logger.info("Ingest finished user_id={} paper_id={}", space.user_id, paper_id)
         queue.put_nowait({"type": "done", "paper": record.model_dump(mode="json")})
     except Exception as exc:
+        logger.exception("Ingest failed user_id={} paper_id={}", user_id, paper_id)
         # Failure hygiene (plan §9): don't leak the object if ingest blows
         # up after the bytes already landed.
-        stat = space.objects.stat(key)
-        space.objects.delete(key)
-        if stat is not None:
-            decrement_storage_used(space.user_id, stat.size_bytes)
+        if space is not None:
+            stat = space.objects.stat(key)
+            space.objects.delete(key)
+            if stat is not None:
+                decrement_storage_used(space.user_id, stat.size_bytes)
         queue.put_nowait({"type": "error", "message": str(exc)})
 
 
 @app.post("/api/reindex")
-async def reindex(space: UserSpace = Depends(current_space)):
+async def reindex(
+    _gate: None = Depends(wait_for_ingest_gate),
+    space: UserSpace = Depends(current_space),
+):
     async def generate() -> AsyncGenerator[str, None]:
         queue: asyncio.Queue = asyncio.Queue()
 
@@ -376,7 +466,7 @@ async def reindex(space: UserSpace = Depends(current_space)):
 
         while True:
             event = await queue.get()
-            yield f"data: {json.dumps(event)}\n\n"
+            yield sse(event)
             if event["type"] in ("done", "error"):
                 break
 
@@ -391,9 +481,12 @@ async def reindex(space: UserSpace = Depends(current_space)):
 
 async def _run_reindex(space: UserSpace, cb, queue: asyncio.Queue) -> None:
     try:
+        logger.info("Reindex started user_id={}", space.user_id)
         await space.librarian.reindex(cb)
+        logger.info("Reindex finished user_id={}", space.user_id)
         queue.put_nowait({"type": "done"})
     except Exception as exc:
+        logger.exception("Reindex failed user_id={}", space.user_id)
         queue.put_nowait({"type": "error", "message": str(exc)})
 
 
@@ -407,7 +500,7 @@ async def upload_progress(job_id: str, space: UserSpace = Depends(current_space)
     async def generate() -> AsyncGenerator[str, None]:
         while True:
             event = await queue.get()
-            yield f"data: {json.dumps(event)}\n\n"
+            yield sse(event)
             if event["type"] in ("done", "error"):
                 _jobs.pop(job_id, None)
                 break

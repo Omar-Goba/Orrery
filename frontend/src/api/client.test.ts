@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatBytes, getTourGalaxy, listKeeperVoyagerFiles, listKeeperVoyagers, listPapers, loginAuth, streamChat, uploadPaper } from "./client";
 
+const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
 describe("api/client", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -15,7 +17,7 @@ describe("api/client", () => {
     await listPapers("normal");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/papers",
+      `${BASE}/api/papers`,
       { credentials: "include" },
     );
   });
@@ -29,7 +31,7 @@ describe("api/client", () => {
     await listPapers("tour");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/tour/papers",
+      `${BASE}/api/tour/papers`,
       { credentials: "include" },
     );
   });
@@ -64,7 +66,7 @@ describe("api/client", () => {
     await loginAuth("omar", "secretpassword");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/auth/login",
+      `${BASE}/api/auth/login`,
       expect.objectContaining({ credentials: "include" }),
     );
   });
@@ -93,12 +95,12 @@ describe("api/client", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://localhost:8000/api/keeper/voyagers",
+      `${BASE}/api/keeper/voyagers`,
       { credentials: "include" },
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://localhost:8000/api/keeper/voyagers/vega-7/files",
+      `${BASE}/api/keeper/voyagers/vega-7/files`,
       { credentials: "include" },
     );
   });

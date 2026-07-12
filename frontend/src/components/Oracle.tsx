@@ -3,6 +3,7 @@ import { Send, ExternalLink, Bot, User } from "lucide-react";
 import clsx from "clsx";
 import type { Citation, SSEEvent } from "../api/client";
 import { getPaperUrl, streamChat } from "../api/client";
+import { useSSEStream } from "../hooks/useSSEStream";
 
 interface Message {
   role: "user" | "assistant";
@@ -16,7 +17,7 @@ export function Oracle() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const cleanupRef = useRef<(() => void) | null>(null);
+  const stream = useSSEStream();
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -34,7 +35,7 @@ export function Oracle() {
       { role: "assistant", content: "", streaming: true },
     ]);
 
-    cleanupRef.current = streamChat(text, (event: SSEEvent) => {
+    stream.start(() => streamChat(text, (event: SSEEvent) => {
       if (event.type === "chunk") {
         if (!event.text) return;
         setMessages((prev) => {
@@ -93,7 +94,7 @@ export function Oracle() {
         });
         setBusy(false);
       }
-    });
+    }));
   };
 
   return (

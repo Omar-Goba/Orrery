@@ -2,10 +2,12 @@ from __future__ import annotations
 import json
 from collections import Counter
 
-from openai import AsyncOpenAI
+from loguru import logger
 
 from backend.config import settings
 from backend.models import PaperRecord, Recommendation
+from backend.services.llm import client_for_role
+from backend.services.retrieval_defaults import CURATOR_RECOMMENDATION_K
 from backend.store import PaperStore
 
 SYSTEM_PROMPT = """\
@@ -20,7 +22,8 @@ Respond with strict JSON only, in this exact shape:
 
 class CuratorAgent:
     def __init__(self, paper_store: PaperStore) -> None:
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._client = client_for_role(settings.llm_curator)
+        self._model = settings.llm_curator.model
         self._papers = paper_store
 
     async def recommend(self) -> list[Recommendation]:
@@ -37,12 +40,20 @@ class CuratorAgent:
             {"role": "user", "content": prompt},
         ]
 
-        resp = await self._client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.4,
-            response_format={"type": "json_object"},
-        )
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                temperature=0.4,
+                response_format={"type": "json_object"},
+            )
+        except Exception:
+            logger.exception(
+                "LLM call failed role=llm_curator endpoint={} model={}",
+                settings.llm_curator.base_url,
+                settings.llm_curator.model,
+            )
+            raise
 
         content = resp.choices[0].message.content or "{}"
         try:
@@ -54,7 +65,7 @@ class CuratorAgent:
         candidate_ids = {p.id for p in toread}
 
         recommendations: list[Recommendation] = []
-        for pick in picks:
+        for pick in picks[:CURATOR_RECOMMENDATION_K]:
             paper_id = pick.get("paper_id")
             reason = pick.get("reason", "")
             if paper_id not in candidate_ids:

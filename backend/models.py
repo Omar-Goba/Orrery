@@ -50,6 +50,13 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
 
 
+class ClientLogRequest(BaseModel):
+    level: Literal["warning", "error"]
+    message: str = Field(min_length=1, max_length=2000)
+    stack: str | None = Field(default=None, max_length=8000)
+    url: str = Field(max_length=2000)
+
+
 class TreeNode(BaseModel):
     name: str
     type: Literal["folder", "paper"]

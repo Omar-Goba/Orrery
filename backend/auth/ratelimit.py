@@ -38,3 +38,4 @@ signup_limiter = RateLimiter(max_calls=3, window_seconds=60 * 60)
 # Public tour chat spends LLM tokens, so keep it much tighter than read-only
 # tour browsing. Plan §7: 10 messages/hour/IP.
 tour_chat_limiter = RateLimiter(max_calls=10, window_seconds=60 * 60)
+client_log_limiter = RateLimiter(max_calls=10, window_seconds=60 * 60)

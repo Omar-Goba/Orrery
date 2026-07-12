@@ -1,4 +1,5 @@
 import { getMe, loginAuth, logoutAuth, signupAuth, type AuthUser } from "../api/client";
+import { readJSON, writeJSON } from "../lib/storage";
 
 export const OWNER_USERNAME = "omar";
 const KEY = "orrery.session";
@@ -25,7 +26,7 @@ function sessionFromUser(user: AuthUser): Session {
     storageQuotaBytes: user.storage_quota_bytes,
     createdAt: user.created_at,
   };
-  localStorage.setItem(KEY, JSON.stringify(session));
+  writeJSON(localStorage, KEY, session);
   return session;
 }
 
@@ -53,12 +54,7 @@ export async function refreshSession(): Promise<Session | null> {
 }
 
 export function getSession(): Session | null {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Session) : null;
-  } catch {
-    return null;
-  }
+  return readJSON<Session>(localStorage, KEY);
 }
 
 export async function logout(): Promise<void> {

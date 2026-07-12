@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from typing import AsyncGenerator, BinaryIO
+from typing import AsyncGenerator
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,28 +12,17 @@ from backend.auth.models import ROLE_KEEPER, User
 from backend.auth.ratelimit import tour_chat_limiter
 from backend.config import settings
 from backend.models import ChatRequest, PaperRecord, SimilarityNeighbor, TourGalaxyResponse, TreeNode
+from backend.services.retrieval_defaults import TOUR_NEIGHBOR_K
 from backend.services.similarity import top_k_neighbors
+from backend.services.sse import sse
+from backend.services.streaming import stream_object
 from backend.services.tree import build_tree
 from backend.space import SpaceRegistry, UserSpace, get_space_registry
 
 router = APIRouter(prefix="/api/tour", tags=["tour"])
 
-_STREAM_CHUNK_SIZE = 1024 * 1024
-
-
 def _object_key_for(paper_id: str) -> str:
     return f"papers/{paper_id}.pdf"
-
-
-def _stream_object(stream: BinaryIO, chunk_size: int = _STREAM_CHUNK_SIZE):
-    try:
-        while True:
-            chunk = stream.read(chunk_size)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        stream.close()
 
 
 def _keeper_user(db: Session) -> User:
@@ -85,7 +73,7 @@ async def get_tour_tree(space: UserSpace = Depends(keeper_space)):
 @router.get("/similarity", response_model=dict[str, list[SimilarityNeighbor]])
 async def get_tour_similarity(space: UserSpace = Depends(keeper_space)):
     ids, vectors = space.vstore.get_all_paper_vectors()
-    return top_k_neighbors(ids, vectors, k=6)
+    return top_k_neighbors(ids, vectors, k=TOUR_NEIGHBOR_K)
 
 
 @router.get("/papers/{paper_id}/file")
@@ -110,7 +98,7 @@ async def get_tour_paper_file(paper_id: str, space: UserSpace = Depends(keeper_s
         "Content-Length": str(stat.size_bytes),
     }
     return StreamingResponse(
-        _stream_object(stream),
+        stream_object(stream),
         media_type="application/pdf",
         headers=headers,
     )
@@ -133,7 +121,7 @@ async def tour_chat(
             async for chunk in space.oracle.stream(body.message):
                 yield chunk
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            yield sse({"type": "error", "message": str(exc)})
 
     return StreamingResponse(
         generate(),

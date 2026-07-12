@@ -3,6 +3,7 @@ import { Compass } from "lucide-react";
 import clsx from "clsx";
 import type { Recommendation } from "../api/client";
 import { getRecommendations } from "../api/client";
+import { useAsyncState } from "../hooks/useAsyncState";
 
 // ── "What should I read next" floating widget ────────────────────────────────
 export function ReadNext({
@@ -11,9 +12,7 @@ export function ReadNext({
   onOpenPaperId: (paperId: string) => void;
 }) {
   const [open, setOpen]     = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [data, setData]     = useState<Recommendation[] | null>(null);
-  const [error, setError]   = useState(false);
+  const recommendations = useAsyncState<Recommendation[]>();
 
   const toggle = () => {
     if (open) {
@@ -21,17 +20,7 @@ export function ReadNext({
       return;
     }
     setOpen(true);
-    setLoading(true);
-    setError(false);
-    getRecommendations()
-      .then(recs => {
-        setData(recs);
-        setLoading(false);
-      })
-      .catch(() => {
-        setError(true);
-        setLoading(false);
-      });
+    recommendations.run(getRecommendations).catch(() => undefined);
   };
 
   return (
@@ -58,7 +47,7 @@ export function ReadNext({
           </header>
 
           <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1.5">
-            {loading && (
+            {recommendations.loading && (
               <div className="flex items-center justify-center py-6">
                 <span className="inline-flex gap-1 items-center">
                   {[0, 150, 300].map(delay => (
@@ -72,20 +61,20 @@ export function ReadNext({
               </div>
             )}
 
-            {!loading && error && (
+            {!recommendations.loading && recommendations.error && (
               <p className="px-1 py-4 text-center text-[11px] text-muted">
                 Couldn't load recommendations.
               </p>
             )}
 
-            {!loading && !error && data && data.length === 0 && (
+            {!recommendations.loading && !recommendations.error && recommendations.data && recommendations.data.length === 0 && (
               <p className="px-1 py-4 text-center text-[11px] text-muted">
                 Nothing urgent — add something to your to-read pile.
               </p>
             )}
 
-            {!loading && !error && data && data.length > 0 && (
-              data.map(rec => (
+            {!recommendations.loading && !recommendations.error && recommendations.data && recommendations.data.length > 0 && (
+              recommendations.data.map(rec => (
                 <RecommendationCard key={rec.paper_id} rec={rec} onOpenPaperId={onOpenPaperId} />
               ))
             )}

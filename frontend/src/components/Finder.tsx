@@ -1,38 +1,40 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Search, FileText, ChevronRight, ExternalLink } from "lucide-react";
 import clsx from "clsx";
 import type { PaperRecord, SSEEvent } from "../api/client";
 import { getPaperUrl, streamChat } from "../api/client";
+import { useAsyncState } from "../hooks/useAsyncState";
+import { useSSEStream } from "../hooks/useSSEStream";
 
 export function Finder() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<PaperRecord[]>([]);
-  const [searching, setSearching] = useState(false);
+  const results = useAsyncState<PaperRecord[]>([]);
   const [searched, setSearched] = useState(false);
-  const cleanupRef = useRef<(() => void) | null>(null);
+  const stream = useSSEStream();
+  const papers = results.data ?? [];
+  const searching = results.loading;
 
   const search = () => {
     const q = query.trim();
     if (!q || searching) return;
-    setSearching(true);
-    setResults([]);
+    results.start([]);
     setSearched(false);
-    cleanupRef.current?.();
 
     const msg = `find_paper: ${q}`;
-    cleanupRef.current = streamChat(msg, (event: SSEEvent) => {
+    let receivedResult = false;
+    stream.start(() => streamChat(msg, (event: SSEEvent) => {
       if (event.type === "result") {
-        setResults(event.papers);
+        receivedResult = true;
+        results.succeed(event.papers);
         setSearched(true);
-        setSearching(false);
       } else if (event.type === "done") {
+        if (!receivedResult) results.succeed([]);
         setSearched(true);
-        setSearching(false);
       } else if (event.type === "error") {
+        results.fail(event.message);
         setSearched(true);
-        setSearching(false);
       }
-    });
+    }));
   };
 
   return (
@@ -80,14 +82,14 @@ export function Finder() {
           </div>
         )}
 
-        {searched && results.length === 0 && !searching && (
+        {searched && papers.length === 0 && !searching && (
           <div className="flex flex-col items-center justify-center py-12 gap-2 text-zinc-600">
             <Search size={32} />
             <p className="text-sm">No results found. Try different keywords.</p>
           </div>
         )}
 
-        {results.map((paper) => (
+        {papers.map((paper) => (
           <PaperCard key={paper.id} paper={paper} />
         ))}
       </div>

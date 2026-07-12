@@ -81,6 +81,8 @@ class SpaceRegistry:
         self._embed = embed_svc
         self._max_size = max_size
         self._spaces: "OrderedDict[str, UserSpace]" = OrderedDict()
+        self._ingest_resume = asyncio.Event()
+        self._ingest_resume.set()
         # Guards `get()` against two concurrent requests for the same
         # not-yet-cached user racing to build (and discard) two `UserSpace`s.
         # `_build` itself does no I/O it needs to await (agents/services only
@@ -106,6 +108,24 @@ class SpaceRegistry:
     async def get_locked(self, user_id: str) -> UserSpace:
         async with self._lock:
             return self.get(user_id)
+
+    async def wait_for_ingest_allowed(self) -> None:
+        await self._ingest_resume.wait()
+
+    def pause_ingest(self) -> None:
+        self._ingest_resume.clear()
+
+    def resume_ingest(self) -> None:
+        self._ingest_resume.set()
+
+    @property
+    def ingest_paused(self) -> bool:
+        return not self._ingest_resume.is_set()
+
+    async def swap_client(self, new_client: chromadb.PersistentClient) -> None:
+        async with self._lock:
+            self._client = new_client
+            self._spaces.clear()
 
     def _build(self, user_id: str) -> UserSpace:
         papers = PaperStore(settings.user_papers_json(user_id))
@@ -152,3 +172,9 @@ async def current_space(
 ) -> UserSpace:
     """`current_user` -> `registry.get(user.id)` -> `UserSpace`."""
     return await registry.get_locked(user.id)
+
+
+async def wait_for_ingest_gate(
+    registry: SpaceRegistry = Depends(get_space_registry),
+) -> None:
+    await registry.wait_for_ingest_allowed()

@@ -8,11 +8,18 @@ from backend.models import PaperRecord
 @pytest.mark.asyncio
 async def test_name_tree_fallback_dedupes_sibling_names(monkeypatch: pytest.MonkeyPatch) -> None:
     namer = ClusterNamer()
-    monkeypatch.setattr("backend.clustering.namer.settings.openai_api_key", "")
+
+    async def fake_name_tree_llm(*_: object) -> dict[str, str]:
+        return {}
+
+    async def fake_repair_names_llm(*_: object) -> dict[str, str]:
+        return {}
 
     async def fake_name_cluster(_: list[str]) -> str:
         return "Neural Methods"
 
+    monkeypatch.setattr(namer, "_name_tree_llm", fake_name_tree_llm)
+    monkeypatch.setattr(namer, "_repair_names_llm", fake_repair_names_llm)
     monkeypatch.setattr(namer, "name_cluster", fake_name_cluster)
     tree = [
         ClusterNode(paper_ids=["p1"]),
@@ -43,11 +50,18 @@ async def test_name_tree_fallback_dedupes_sibling_names(monkeypatch: pytest.Monk
 @pytest.mark.asyncio
 async def test_name_tree_preserves_misc(monkeypatch: pytest.MonkeyPatch) -> None:
     namer = ClusterNamer()
-    monkeypatch.setattr("backend.clustering.namer.settings.openai_api_key", "")
+
+    async def fake_name_tree_llm(*_: object) -> dict[str, str]:
+        return {}
+
+    async def fake_repair_names_llm(*_: object) -> dict[str, str]:
+        return {}
 
     async def fake_name_cluster(_: list[str]) -> str:
         return "Main Topic"
 
+    monkeypatch.setattr(namer, "_name_tree_llm", fake_name_tree_llm)
+    monkeypatch.setattr(namer, "_repair_names_llm", fake_repair_names_llm)
     monkeypatch.setattr(namer, "name_cluster", fake_name_cluster)
     tree = [
         ClusterNode(paper_ids=["p1"]),

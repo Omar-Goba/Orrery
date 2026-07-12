@@ -8,4 +8,4 @@ Typed browser client for the FastAPI backend.
 - Fetch helpers for listing papers, loading the tree, opening PDFs, updating status, and starting uploads/reindex.
 - Streaming helpers for backend SSE responses.
 
-`BASE` is currently fixed to `http://localhost:8000`, matching the backend dev server.
+`BASE` comes from `VITE_API_BASE_URL` and defaults to same-origin for Docker/nginx deployments.

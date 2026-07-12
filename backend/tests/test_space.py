@@ -182,6 +182,38 @@ def test_vector_stores_use_distinct_collections_per_user(
     assert space_b.vstore.count_papers() == 0
 
 
+@pytest.mark.asyncio
+async def test_swap_client_clears_cached_spaces_and_uses_new_client(
+    registry: SpaceRegistry,
+    tmp_dbs: Path,
+) -> None:
+    from backend.config import settings
+
+    old_space = registry.get("alice")
+    new_client = VectorStore.build_client(settings.chroma_persist_dir.parent / "chroma-new")
+    new_store = VectorStore(new_client, user_id="alice")
+    new_store.upsert_paper_vector("paper-new", [0.1, 0.2, 0.3], {"title": "new"})
+
+    await registry.swap_client(new_client)
+    new_space = registry.get("alice")
+
+    assert new_space is not old_space
+    assert new_space.vstore.paper_exists("paper-new") is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_pause_gate_blocks_until_resumed(registry: SpaceRegistry) -> None:
+    registry.pause_ingest()
+    waiter = asyncio.create_task(registry.wait_for_ingest_allowed())
+    await asyncio.sleep(0)
+
+    assert waiter.done() is False
+
+    registry.resume_ingest()
+    await waiter
+    assert registry.ingest_paused is False
+
+
 # ── current_space dependency ────────────────────────────────────────────────
 
 @pytest.mark.asyncio

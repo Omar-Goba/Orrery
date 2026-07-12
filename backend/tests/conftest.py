@@ -17,29 +17,47 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture(autouse=True)
 def _dummy_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Agents construct an AsyncOpenAI client at __init__ time; it only
-    # validates that *a* key string is present, no network call happens
-    # until a request is actually made. `settings` is a module-level
-    # singleton already instantiated at import time, so patch the attribute
-    # directly rather than the env var (which is too late by now).
+    # Role clients are constructed from the module-level settings singleton.
+    # Patch API keys directly rather than env vars, which are too late by now.
     from backend.config import settings
 
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-dummy")
+    for role in (
+        settings.llm_summary,
+        settings.llm_namer,
+        settings.llm_embedder,
+        settings.llm_oracle,
+        settings.llm_curator,
+        settings.llm_master,
+    ):
+        monkeypatch.setattr(role, "api_key", "sk-test-dummy")
 
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiters() -> None:
     # Rate limiter state is module-level (in-process); tests that hit the
     # limit on purpose must not leak into other tests.
-    from backend.auth.ratelimit import login_limiter, signup_limiter, tour_chat_limiter
+    from backend.auth.ratelimit import client_log_limiter, login_limiter, signup_limiter, tour_chat_limiter
 
+    client_log_limiter.reset()
     login_limiter.reset()
     signup_limiter.reset()
     tour_chat_limiter.reset()
     yield
+    client_log_limiter.reset()
     login_limiter.reset()
     signup_limiter.reset()
     tour_chat_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _stub_embedding_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.services.embeddings import EmbeddingService
+
+    async def _verify(self: EmbeddingService) -> int:
+        self._dim = 3
+        return 3
+
+    monkeypatch.setattr(EmbeddingService, "verify", _verify)
 
 
 @pytest.fixture()

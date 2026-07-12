@@ -1,24 +1,71 @@
 from pathlib import Path
-from pydantic import Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class RoleConfig(BaseModel):
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""
+    model: str = ""
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        env_nested_delimiter="__",
     )
 
-    openai_api_key: str = ""
     mistral_api_key: str = ""
-    summary_model: str = "gpt-4o-mini"
-    namer_model: str = "gpt-4o-mini"
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY", exclude=True)
+    llm_summary: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_namer: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_embedder: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(
+            base_url="http://localhost:11434/v1",
+            model="mxbai-embed-large",
+        )
+    )
+    llm_oracle: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_curator: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
+    llm_master: RoleConfig = Field(
+        default_factory=lambda: RoleConfig(model="gpt-4o-mini")
+    )
 
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_embed_model: str = "mxbai-embed-large"
-    ollama_namer_model: str = "gemma3:4b"
+    @model_validator(mode="after")
+    def apply_legacy_openai_key(self) -> "Settings":
+        if not self.openai_api_key:
+            return self
+        for role in (
+            self.llm_summary,
+            self.llm_namer,
+            self.llm_oracle,
+            self.llm_curator,
+            self.llm_master,
+        ):
+            if not role.api_key and role.base_url.rstrip("/") == "https://api.openai.com/v1":
+                role.api_key = self.openai_api_key
+        return self
 
-    dbs_dir: Path = Path("./dbs")
-    chroma_persist_dir: Path = Path("./dbs/chroma")
+    dbs_dir: Path = Field(
+        default=Path("/data"),
+        validation_alias=AliasChoices("ORRERY_DBS_DIR", "DBS_DIR"),
+    )
+    chroma_persist_dir: Path = Field(
+        default=Path("/data/chroma"),
+        validation_alias=AliasChoices("ORRERY_CHROMA_PERSIST_DIR", "CHROMA_PERSIST_DIR"),
+    )
+    log_dir_override: Path | None = Field(default=None, validation_alias="ORRERY_LOG_DIR")
+    log_level: str = Field(default="INFO", validation_alias="ORRERY_LOG_LEVEL")
 
     backend_port: int = 8000
     cors_origins: str = "http://localhost:5173"
@@ -64,6 +111,10 @@ class Settings(BaseSettings):
         nothing outside `backend/services/objectstore.py` should read or
         write here directly."""
         return self.dbs_dir / "objects"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.log_dir_override or self.dbs_dir / "logs"
 
     @property
     def ocr_cache_dir(self) -> Path:
