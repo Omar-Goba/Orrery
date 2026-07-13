@@ -1,8 +1,14 @@
 SHELL := /bin/bash
 SERVICE ?= all
 V ?= 0
+BACKUP ?=
+PROJECT ?=
+FORCE ?= 0
 
-.PHONY: help dev install install-backend install-frontend lint lint-backend lint-frontend test test-backend test-frontend reindex
+VOLUME_PROJECT_FLAG = $(if $(strip $(PROJECT)),--project-name "$(PROJECT)",)
+VOLUME_FORCE_FLAG = $(if $(filter 1 true yes,$(FORCE)),--force,)
+
+.PHONY: help dev install install-backend install-frontend lint lint-backend lint-frontend test test-backend test-frontend reindex backup backups restore
 
 help:
 	@./scripts/help.sh
@@ -39,3 +45,16 @@ test-frontend:
 
 reindex:
 	@./scripts/reindex.sh $(if $(filter 1 true yes,$(V)),-v,)
+
+backup:
+	@./scripts/docker-volumes.sh backup $(VOLUME_PROJECT_FLAG)
+
+backups:
+	@./scripts/docker-volumes.sh list
+
+restore:
+	@if [[ -z "$(strip $(BACKUP))" ]]; then \
+		printf 'Usage: make restore BACKUP=<backup-directory> [PROJECT=<name>] [FORCE=1]\n' >&2; \
+		exit 1; \
+	fi
+	@./scripts/docker-volumes.sh restore "$(BACKUP)" $(VOLUME_PROJECT_FLAG) $(VOLUME_FORCE_FLAG)

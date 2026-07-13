@@ -15,6 +15,9 @@ ${BOLD}Daily recipes${RESET}
   ${CYAN}make lint${RESET}                Lint/check backend + frontend
   ${CYAN}make test${RESET}                Test backend + frontend
   ${CYAN}make reindex${RESET}             POST /api/reindex to the running backend
+  ${CYAN}make backup${RESET}              Back up both Docker data volumes
+  ${CYAN}make backups${RESET}             List Docker volume backups
+  ${CYAN}make restore BACKUP=<path>${RESET} Restore into empty Docker volumes
 
 ${BOLD}Scoped recipes${RESET}
   ${CYAN}make install-backend${RESET}      uv sync --extra dev in backend/
@@ -27,6 +30,10 @@ ${BOLD}Scoped recipes${RESET}
 ${BOLD}Verbose mode${RESET}
   ${CYAN}make lint V=1${RESET}             Show command stdout
   ${CYAN}./scripts/lint.sh all -v${RESET}  Direct script verbose mode
+
+${BOLD}Restore options${RESET}
+  ${CYAN}PROJECT=orrery-recovery${RESET}    Target a different Compose project
+  ${CYAN}FORCE=1${RESET}                    Replace non-empty target volumes
 
 ${DIM}Note: 'make -v' is reserved by Make itself, so Make recipes use V=1.${RESET}
 EOF

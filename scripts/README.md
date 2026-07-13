@@ -40,9 +40,9 @@ Errors are appended to generated `bulk_ingest_errors.jsonl`.
 volumes. It does not use or depend on the repository's `dbs/` directory.
 
 ```bash
-./scripts/docker-volumes.sh backup
-./scripts/docker-volumes.sh list
-./scripts/docker-volumes.sh restore <path-printed-by-list>
+make backup
+make backups
+make restore BACKUP=<path-printed-by-list>
 ```
 
 Backup archives both `orrery_data` (SQLite, metadata, Chroma, OCR cache, and logs) and
@@ -65,13 +65,16 @@ volumes unless `--force` is passed, and it never starts containers automatically
 ```bash
 # Restore over main after deliberately bringing it down.
 docker compose down
-./scripts/docker-volumes.sh restore <backup-directory> --force
+make restore BACKUP=<backup-directory> FORCE=1
 docker compose up -d
 
 # Restore into a separate pair of volumes.
-./scripts/docker-volumes.sh restore <backup-directory> --project-name orrery-recovery
+make restore BACKUP=<backup-directory> PROJECT=orrery-recovery
 docker compose -p orrery-recovery up -d
 ```
+
+The script remains available directly when `--dry-run`, `--no-restart`, or a custom
+`--output-dir` is needed.
 
 Use `--dry-run` to validate archives and preview either operation without stopping or
 creating containers, creating files, pulling images, or changing volumes. Target-volume

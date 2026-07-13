@@ -48,8 +48,8 @@ Normal shutdown removes the containers and network but preserves the `orrery_dat
 Back up both application volumes without relying on `dbs/`:
 
 ```bash
-./scripts/docker-volumes.sh backup
-./scripts/docker-volumes.sh list
+make backup
+make backups
 ```
 
 Backups are checksum-verified bundles under the repository hub's
