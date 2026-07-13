@@ -43,7 +43,12 @@ from backend.services.embedder_registry import (
     load_embedder_identity,
     save_embedder_identity,
 )
-from backend.services.objectstore import LocalObjectStore, ObjectSizeLimitExceeded, ObjectStore
+from backend.services.objectstore import (
+    ObjectSizeLimitExceeded,
+    ObjectStore,
+    check_object_store_ready,
+    create_object_store,
+)
 from backend.services.logging_setup import configure_logging
 from backend.services.reembed_job import ReembedJob
 from backend.services.retrieval_defaults import MAIN_NEIGHBOR_K
@@ -122,7 +127,8 @@ async def lifespan(app: FastAPI):
     # per-user `VectorStore` built by `SpaceRegistry` uses this same client,
     # never a client per user.
     _chroma_client = VectorStore.build_client(active_chroma_dir)
-    _object_store = LocalObjectStore(settings.objects_dir)
+    _object_store = create_object_store(settings)
+    check_object_store_ready(_object_store)
 
     app.state.space_registry = SpaceRegistry(
         chroma_client=_chroma_client,

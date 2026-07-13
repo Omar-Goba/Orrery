@@ -18,7 +18,36 @@ Create `.env` from the checked-in template and fill in local values:
 cp .env.example .env
 ```
 
-Do not commit or expose `.env`. The template documents the required variable names for OpenAI, Ollama, paths, server port, and CORS origins.
+Do not commit or expose `.env`. The template documents the required variable names for LLM providers, local paths, S3-compatible object storage, and MinIO. Replace the placeholder API keys and local MinIO credentials before starting the application.
+
+## Docker Compose
+
+The complete local stack includes the frontend, backend, private MinIO object storage, and an idempotent bucket initializer. The default configuration uses external OpenAI-compatible LLM services, including `text-embedding-3-small` for startup embedding verification. From the repository root:
+
+```bash
+cp .env.example .env
+# Configure the required LLM roles and replace the local MinIO credentials.
+docker compose up --build
+```
+
+Once the services are healthy:
+
+- App: `http://localhost`
+- MinIO console: `http://localhost:9001`
+
+The backend, MinIO object API, and Ollama API are available only to containers on the Compose network. They are not published on host ports 8000, 9000, or 11434.
+
+Stop the stack normally with:
+
+```bash
+docker compose down
+```
+
+Normal shutdown removes the containers and network but preserves the `orrery_data`, `minio_data`, and optional `ollama_data` named volumes. `docker compose down -v` is a destructive reset that deletes those project volumes, including application metadata, uploaded PDFs, vector data, logs, and downloaded Ollama models.
+
+Bundled Ollama is optional. Leave `COMPOSE_PROFILES` empty when using external LLM APIs. To run Ollama, set `COMPOSE_PROFILES=local-llm`, set `LLM_EMBEDDER__BASE_URL=http://ollama:11434/v1`, leave its API key blank, and keep `LLM_EMBEDDER__MODEL` identical to `OLLAMA_EMBED_MODEL`. The profile starts a one-shot initializer that pulls that embedding model before the backend starts. Other local role models must be provisioned separately if configured. A `--profile local-llm` command-line override is also valid, but enabling the profile does not rewrite role URLs.
+
+Nginx accepts request bodies up to `110m`, allowing multipart overhead above the default 100 MiB `ORRERY_MAX_PDF_BYTES`. If the application limit is raised, update `client_max_body_size` in `frontend/nginx.conf` at the same time so valid uploads still reach FastAPI.
 
 ## Backend Setup
 

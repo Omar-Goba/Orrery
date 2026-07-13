@@ -25,6 +25,7 @@ dependencies = [
     "argon2-cffi>=23.1.0",
     "sqlmodel>=0.0.21",
     "loguru>=0.7.2",
+    "boto3>=1.43.46",
 ]
 
 [project.optional-dependencies]

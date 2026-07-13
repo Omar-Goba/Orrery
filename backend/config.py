@@ -1,5 +1,7 @@
 from pathlib import Path
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from typing import Literal
+
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +17,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         env_nested_delimiter="__",
+        hide_input_in_errors=True,
     )
 
     mistral_api_key: str = ""
@@ -80,6 +83,47 @@ class Settings(BaseSettings):
     is_production: bool = Field(default=False, validation_alias="ORRERY_IS_PRODUCTION")
 
     # ── object storage (Tier 2, phase 2) ────────────────────────────────────
+    object_store: Literal["local", "s3"] = Field(
+        default="local", validation_alias="ORRERY_OBJECT_STORE"
+    )
+    s3_bucket: str = Field(default="", validation_alias="ORRERY_S3_BUCKET")
+    s3_endpoint_url: str = Field(
+        default="", validation_alias="ORRERY_S3_ENDPOINT_URL"
+    )
+    s3_region: str = Field(default="", validation_alias="ORRERY_S3_REGION")
+    s3_access_key_id: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="ORRERY_S3_ACCESS_KEY_ID",
+        exclude=True,
+        repr=False,
+    )
+    s3_secret_access_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="ORRERY_S3_SECRET_ACCESS_KEY",
+        exclude=True,
+        repr=False,
+    )
+    s3_addressing_style: Literal["auto", "path", "virtual"] = Field(
+        default="auto", validation_alias="ORRERY_S3_ADDRESSING_STYLE"
+    )
+
+    @model_validator(mode="after")
+    def validate_object_store(self) -> "Settings":
+        if self.object_store != "s3":
+            return self
+        required = {
+            "ORRERY_S3_BUCKET": self.s3_bucket,
+            "ORRERY_S3_REGION": self.s3_region,
+            "ORRERY_S3_ACCESS_KEY_ID": self.s3_access_key_id.get_secret_value(),
+            "ORRERY_S3_SECRET_ACCESS_KEY": self.s3_secret_access_key.get_secret_value(),
+        }
+        missing = [name for name, value in required.items() if not value.strip()]
+        if missing:
+            raise ValueError(
+                "s3 object storage requires: " + ", ".join(sorted(missing))
+            )
+        return self
+
     # Per-file cap; the full quota system lands in phase 6, this just gives
     # it somewhere to plug in and keeps a single upload from being unbounded.
     max_pdf_bytes: int = Field(

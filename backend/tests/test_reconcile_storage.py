@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from unittest.mock import Mock
 
 from sqlmodel import Session, select
 
@@ -60,3 +61,18 @@ def test_reconcile_storage_fix_corrects_counter(tmp_dbs: Path) -> None:
     with Session(get_engine()) as db:
         fixed = db.exec(select(User).where(User.id == user.id)).one()
         assert fixed.storage_used_bytes == 3
+
+
+def test_reconcile_storage_uses_configured_store(tmp_dbs: Path, monkeypatch) -> None:
+    user = _create_user(recorded_bytes=0)
+    selected_store = Mock()
+    selected_store.list.return_value = [Mock(size_bytes=12)]
+    monkeypatch.setattr(
+        "backend.tools.reconcile_storage.create_object_store",
+        lambda configured: selected_store,
+    )
+
+    rows = reconcile_storage()
+
+    selected_store.list.assert_called_once_with(f"users/{user.id}/papers/")
+    assert rows[0].actual_bytes == 12

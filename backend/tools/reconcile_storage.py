@@ -10,7 +10,7 @@ from backend.accounting import set_storage_used
 from backend.auth.db import get_engine, init_db
 from backend.auth.models import User
 from backend.config import settings
-from backend.services.objectstore import LocalObjectStore
+from backend.services.objectstore import create_object_store
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class StorageDrift:
 
 def reconcile_storage(*, fix: bool = False) -> list[StorageDrift]:
     init_db()
-    objects = LocalObjectStore(settings.objects_dir)
+    objects = create_object_store(settings)
     results: list[StorageDrift] = []
 
     with Session(get_engine()) as db:

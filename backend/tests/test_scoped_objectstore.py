@@ -62,6 +62,7 @@ def test_stat_and_delete_scoped(scoped_a: ScopedObjectStore) -> None:
 def test_list_returns_keys_relative_to_scope(scoped_a: ScopedObjectStore) -> None:
     scoped_a.put("papers/a.pdf", io.BytesIO(b"1"))
     scoped_a.put("papers/b.pdf", io.BytesIO(b"22"))
+    scoped_a.put("papers-archive/old.pdf", io.BytesIO(b"333"))
 
     results = scoped_a.list("papers/")
     keys = sorted(r.key for r in results)
