@@ -1,4 +1,45 @@
 services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    init: true
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+      ORRERY_S3_BUCKET: ${ORRERY_S3_BUCKET:?ORRERY_S3_BUCKET must be set}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing "local/$${ORRERY_S3_BUCKET}"
+        mc anonymous set none "local/$${ORRERY_S3_BUCKET}"
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -6,10 +47,28 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # Keep container state on the named volume even when .env configures local paths.
+      ORRERY_DBS_DIR: /data
+      ORRERY_CHROMA_PERSIST_DIR: /data/chroma
+      ORRERY_LOG_DIR: /data/logs
+      ORRERY_OBJECT_STORE: s3
+      ORRERY_S3_BUCKET: ${ORRERY_S3_BUCKET:?ORRERY_S3_BUCKET must be set}
+      ORRERY_S3_ENDPOINT_URL: http://minio:9000
+      ORRERY_S3_REGION: ${ORRERY_S3_REGION:-us-east-1}
+      ORRERY_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      ORRERY_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+      ORRERY_S3_ADDRESSING_STYLE: path
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      ollama-init:
+        condition: service_completed_successfully
+        required: false
     volumes:
       - orrery_data:/data
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     healthcheck:
       test:
         [
@@ -20,8 +79,10 @@ services:
         ]
       interval: 30s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 60s
+    init: true
+    restart: unless-stopped
 
   frontend:
     build:
@@ -32,16 +93,46 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    init: true
+    restart: unless-stopped
 
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:0.9.0
     profiles:
       - local-llm
     volumes:
       - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    init: true
+    restart: unless-stopped
+
+  ollama-init:
+    image: ollama/ollama:0.9.0
+    profiles:
+      - local-llm
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "${OLLAMA_EMBED_MODEL:-mxbai-embed-large}"]
+    init: true
+    restart: "no"
 
 volumes:
   orrery_data:
+  minio_data:
   ollama_data:
