@@ -57,6 +57,9 @@ export function GalaxyScene({
   const [focusPath, setFocusPath]    = useState<string | null>(null);
   const [oraclePrefill, setOraclePrefill] = useState<{ text: string; token: number } | null>(null);
   const [tourHighlightPath, setTourHighlightPath] = useState<string | null>(null);
+  const [desktopViewport, setDesktopViewport] = useState(() =>
+    window.matchMedia?.("(min-width: 1024px)").matches ?? window.innerWidth >= 1024
+  );
   const abortReindex                 = useRef<(() => void) | null>(null);
   const graphRef    = useRef<PaperGraphHandle>(null);
   const focusTokenRef = useRef(0);
@@ -67,6 +70,14 @@ export function GalaxyScene({
   // only has one public target: Omar's Keeper tour.
   const hasRealData = mode === "owner" || galaxy === OWNER_USERNAME;
   const apiMode: ApiMode = mode === "observer" ? "tour" : "normal";
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    const onChange = (event: MediaQueryListEvent) => setDesktopViewport(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   const load = useCallback(async () => {
     if (!hasRealData) {
@@ -216,6 +227,7 @@ export function GalaxyScene({
         <PaperGraph
           ref={graphRef}
           papers={papers}
+          active={desktopViewport}
           onHover={setHovered}
           onOpenPaper={pinStar}
           insets={{ left: libraryOpen ? 380 : 120, right: 100, top: 90, bottom: 150 }}
@@ -392,7 +404,7 @@ export function GalaxyScene({
               papers={papers}
               onHover={setHovered}
               onOpenPaper={openPaper}
-              active={mobileView === "graph"}
+              active={!desktopViewport && mobileView === "graph"}
               insets={{ left: 30, right: 30, top: 80, bottom: 90 }}
               similarity={similarity}
             />

@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GalaxyScene } from "./GalaxyScene";
 import type { PaperRecord } from "../api/client";
 import * as api from "../api/client";
@@ -25,8 +25,8 @@ vi.mock("../components/PaperGraph", async () => {
   const React = await import("react");
   return {
     PaperGraph: React.forwardRef((props: unknown, ref) => {
-      const graphProps = props as { active?: boolean };
-      if (graphProps.active === undefined) sceneMocks.desktopGraphProps = props;
+      const graphProps = props as { active?: boolean; onFocusCluster?: unknown };
+      if (graphProps.onFocusCluster) sceneMocks.desktopGraphProps = props;
       else sceneMocks.mobileGraphProps = props;
       React.useImperativeHandle(ref, () => ({
         pulseCitations: vi.fn(),
@@ -116,6 +116,10 @@ const voyagerSession: Session = {
   storageQuotaBytes: 1024,
   createdAt: "2026-01-01T00:00:00Z",
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("GalaxyScene gating", () => {
   beforeEach(() => {
@@ -304,6 +308,36 @@ describe("GalaxyScene upload lifecycle", () => {
     expect(mobile.onUploadResolve).toBeUndefined();
     expect(mobile.onUploadCancel).toBeUndefined();
     expect(mobile.onUploadDone).toBeTypeOf("function");
+    expect(sceneMocks.desktopGraphProps).toMatchObject({ active: true });
+    expect(sceneMocks.mobileGraphProps).toMatchObject({ active: false });
+  });
+
+  it("pauses the CSS-hidden desktop graph and activates only the selected mobile graph", async () => {
+    let viewportListener: ((event: MediaQueryListEvent) => void) | undefined;
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: false,
+      media: "(min-width: 1024px)",
+      onchange: null,
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        viewportListener = listener;
+      },
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    render(<GalaxyScene galaxy="omar" mode="owner" session={null} onExitToUniverse={() => {}} />);
+    await screen.findAllByTestId("paper-graph");
+
+    expect(sceneMocks.desktopGraphProps).toMatchObject({ active: false });
+    expect(sceneMocks.mobileGraphProps).toMatchObject({ active: false });
+
+    await act(async () => screen.getByText("Network").click());
+    expect(sceneMocks.desktopGraphProps).toMatchObject({ active: false });
+    expect(sceneMocks.mobileGraphProps).toMatchObject({ active: true });
+
+    act(() => viewportListener?.({ matches: true } as MediaQueryListEvent));
+    expect(sceneMocks.desktopGraphProps).toMatchObject({ active: true });
     expect(sceneMocks.mobileGraphProps).toMatchObject({ active: false });
   });
 });
