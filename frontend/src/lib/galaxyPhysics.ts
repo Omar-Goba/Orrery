@@ -29,6 +29,7 @@ export interface GalaxySimulationNode extends GalaxyPoint {
   anchors: readonly GalaxyAnchor[];
   ambient: GalaxyAmbientMotion;
   drag: GalaxyDragConstraint | null;
+  recovery: number;
 }
 
 export interface GalaxyPhysicsConfig {
@@ -43,6 +44,10 @@ export interface GalaxyPhysicsConfig {
   maxSpeed: number;
   boundaryRestitution: number;
   ambientAcceleration: number;
+  ambientMaxSpeed: number;
+  recoverySeconds: number;
+  recoveryAttraction: number;
+  recoveryDampingRatio: number;
 }
 
 export interface GalaxyPhysicsState {
@@ -66,7 +71,11 @@ export const DEFAULT_GALAXY_PHYSICS_CONFIG: Readonly<GalaxyPhysicsConfig> = {
   damping: 3.8,
   maxSpeed: 120,
   boundaryRestitution: 0.3,
-  ambientAcceleration: 2.4,
+  ambientAcceleration: 3.2,
+  ambientMaxSpeed: 0.7,
+  recoverySeconds: 2.4,
+  recoveryAttraction: 2,
+  recoveryDampingRatio: 1.05,
 };
 
 export function createGalaxyPhysicsConfig(
@@ -117,6 +126,21 @@ export function precomputeAmbientMotion(seed: string, strength = 1): GalaxyAmbie
     strength: strength * (0.75 + hash01(seed, 0x7f4a7c15) * 0.5),
     direction: hash01(seed, 0x165667b1) < 0.5 ? -1 : 1,
   };
+}
+
+/** Start a critically damped return for a released node and neighbors it displaced. */
+export function recoverGalaxyAfterDrag(
+  nodes: GalaxySimulationNode[],
+  released: GalaxySimulationNode,
+  radius = DEFAULT_GALAXY_PHYSICS_CONFIG.repulsionRadius,
+): void {
+  const radiusSquared = radius * radius;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const dx = node.x - released.x;
+    const dy = node.y - released.y;
+    if (node === released || dx * dx + dy * dy <= radiusSquared) node.recovery = 1;
+  }
 }
 
 /**
@@ -253,32 +277,49 @@ function integrateNodes(
   const maxX = Math.max(bounds.minX, bounds.maxX);
   const minY = Math.min(bounds.minY, bounds.maxY);
   const maxY = Math.max(bounds.minY, bounds.maxY);
-  const damping = Math.exp(-config.damping * dt);
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
+    const recovery = clamp(node.recovery, 0, 1);
+    const attractionScale = 1 + recovery * config.recoveryAttraction;
+    let anchorStrength = 0;
     for (let anchorIndex = 0; anchorIndex < node.anchors.length; anchorIndex++) {
       const anchor = node.anchors[anchorIndex];
-      node.vx += (anchor.x - node.x) * anchor.strength * dt;
-      node.vy += (anchor.y - node.y) * anchor.strength * dt;
+      anchorStrength += anchor.strength;
+      node.vx += (anchor.x - node.x) * anchor.strength * attractionScale * dt;
+      node.vy += (anchor.y - node.y) * anchor.strength * attractionScale * dt;
     }
 
     const ambientAnchor = node.anchors[node.anchors.length - 1];
-    if (ambientAnchor && config.ambientAcceleration !== 0 && node.ambient.strength !== 0) {
+    if (ambientAnchor && config.ambientAcceleration !== 0 && config.ambientMaxSpeed > 0 &&
+        node.ambient.strength !== 0 && recovery < 1) {
       const dx = node.x - ambientAnchor.x;
       const dy = node.y - ambientAnchor.y;
       const distance = Math.hypot(dx, dy);
       const pulse = 0.88 + Math.sin(elapsed * node.ambient.frequency + node.ambient.phase) * 0.12;
-      const acceleration = config.ambientAcceleration * node.ambient.strength * pulse * node.ambient.direction;
+      let tangentX: number;
+      let tangentY: number;
       if (distance > 1e-6) {
-        node.vx += (-dy / distance) * acceleration * dt;
-        node.vy += (dx / distance) * acceleration * dt;
+        tangentX = (-dy / distance) * node.ambient.direction;
+        tangentY = (dx / distance) * node.ambient.direction;
       } else {
-        node.vx += Math.cos(node.ambient.phase) * acceleration * dt;
-        node.vy += Math.sin(node.ambient.phase) * acceleration * dt;
+        tangentX = Math.cos(node.ambient.phase) * node.ambient.direction;
+        tangentY = Math.sin(node.ambient.phase) * node.ambient.direction;
       }
+      const tangentialSpeed = node.vx * tangentX + node.vy * tangentY;
+      const speedHeadroom = clamp(1 - tangentialSpeed / config.ambientMaxSpeed, 0, 1);
+      const acceleration = config.ambientAcceleration * node.ambient.strength * pulse
+        * speedHeadroom * (1 - recovery);
+      node.vx += tangentX * acceleration * dt;
+      node.vy += tangentY * acceleration * dt;
     }
 
+    const criticalDamping = Math.max(
+      config.damping,
+      2 * Math.sqrt(anchorStrength * attractionScale) * config.recoveryDampingRatio,
+    );
+    const dampingRate = config.damping + recovery * (criticalDamping - config.damping);
+    const damping = Math.exp(-dampingRate * dt);
     node.vx *= damping;
     node.vy *= damping;
 
@@ -288,6 +329,10 @@ function integrateNodes(
       node.vx = 0;
       node.vy = 0;
       continue;
+    }
+
+    if (node.recovery > 0) {
+      node.recovery = Math.max(0, node.recovery - dt / config.recoverySeconds);
     }
 
     const speed = Math.hypot(node.vx, node.vy);

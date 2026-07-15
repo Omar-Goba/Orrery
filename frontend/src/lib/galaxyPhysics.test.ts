@@ -4,6 +4,7 @@ import {
   createGalaxyPhysicsState,
   precomputeAmbientMotion,
   precomputeHierarchyAnchors,
+  recoverGalaxyAfterDrag,
   stepGalaxyPhysics,
   type GalaxyAnchor,
   type GalaxyBounds,
@@ -26,6 +27,7 @@ function node(
     anchors,
     ambient: precomputeAmbientMotion(id),
     drag: null,
+    recovery: 0,
   };
 }
 
@@ -147,6 +149,34 @@ describe("galaxyPhysics", () => {
     expect(neighbor.x).toBeGreaterThan(8);
   });
 
+  it("returns a released star and its displaced neighbors without oscillating", () => {
+    const anchors = [{ x: 0, y: 0, strength: 2 }];
+    const released = node("released", 90, 0, anchors);
+    const neighbor = node("neighbor", 35, 0, anchors);
+    released.vx = 12;
+    neighbor.vx = 18;
+    recoverGalaxyAfterDrag([released, neighbor], released);
+    const config = createGalaxyPhysicsConfig({ repulsionStrength: 0, ambientAcceleration: 0 });
+    const distances: number[] = [];
+    const positions: number[] = [];
+    const state = createGalaxyPhysicsState(2);
+
+    for (let i = 0; i < 8 * 60; i++) {
+      stepGalaxyPhysics(state, [released, neighbor], BOUNDS, 1 / 60, config);
+      distances.push(Math.abs(released.x));
+      positions.push(released.x);
+    }
+
+    expect(distances[60]).toBeLessThan(distances[0]);
+    expect(Math.max(...distances.slice(120))).toBeLessThan(35);
+    expect(Math.min(...positions)).toBeGreaterThanOrEqual(0);
+    expect(Math.abs(released.x)).toBeLessThan(1);
+    expect(Math.abs(neighbor.x)).toBeLessThan(1);
+    expect(Math.hypot(released.vx, released.vy)).toBeLessThan(0.1);
+    expect(released.recovery).toBe(0);
+    expect(neighbor.recovery).toBe(0);
+  });
+
   it("caps speed and reflects nodes inside normalized bounds", () => {
     const config = createGalaxyPhysicsConfig({
       repulsionStrength: 0,
@@ -172,22 +202,24 @@ describe("galaxyPhysics", () => {
     expect(Math.hypot(bounded.vx, bounded.vy)).toBeLessThanOrEqual(config.maxSpeed);
   });
 
-  it("keeps deterministic ambient motion calm and bounded around an anchor", () => {
+  it("keeps deterministic ambient motion nonzero, subtle, and bounded around an anchor", () => {
     const anchor = [{ x: 0, y: 0, strength: 1.5 }];
-    const moving = node("ambient", 40, 0, anchor);
+    const moving = node("ambient", 0, 0, anchor);
     const samples: number[] = [];
+    const speeds: number[] = [];
     const state = createGalaxyPhysicsState();
     const config = createGalaxyPhysicsConfig({ repulsionStrength: 0 });
 
     for (let i = 0; i < 30 * 60; i++) {
       stepGalaxyPhysics(state, [moving], BOUNDS, 1 / 60, config);
       samples.push(Math.hypot(moving.x, moving.y));
+      speeds.push(Math.hypot(moving.vx, moving.vy));
     }
 
-    expect(Math.max(...samples)).toBeLessThan(41);
-    expect(Math.min(...samples)).toBeGreaterThan(0);
-    expect(Math.hypot(moving.vx, moving.vy)).toBeLessThan(5);
-    expect(Math.abs(moving.y)).toBeGreaterThan(0.01);
+    expect(Math.max(...samples)).toBeGreaterThan(0.1);
+    expect(Math.max(...samples)).toBeLessThan(1);
+    expect(Math.max(...speeds)).toBeLessThan(config.ambientMaxSpeed);
+    expect(Math.hypot(moving.x, moving.y)).toBeGreaterThan(0.1);
   });
 
   it("handles empty, single-node, zero-anchor, and multi-anchor simulations", () => {

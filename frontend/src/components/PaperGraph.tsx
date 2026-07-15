@@ -13,6 +13,7 @@ import {
   createGalaxyPhysicsState,
   precomputeAmbientMotion,
   precomputeHierarchyAnchors,
+  recoverGalaxyAfterDrag,
   stepGalaxyPhysics,
   type GalaxyAnchor,
   type GalaxyAmbientMotion,
@@ -44,6 +45,7 @@ interface GNode {
   anchors: readonly GalaxyAnchor[];
   ambient: GalaxyAmbientMotion;
   drag: GalaxyDragConstraint | null;
+  recovery: number;
   /** 1 = ingested right now, fading to 0 at 7 days old. Precomputed per build. */
   comet: number;
 }
@@ -117,7 +119,8 @@ const NODE_R     = 6;
 const ORBIT_DECAY = 0.50;   // each depth level's orbit radius = parent's × this
 const INITIAL_TOPOLOGY_WARMUP_SECONDS = 1;
 const REDUCED_MOTION_WARMUP_SECONDS = 1.25;
-const RELEASE_SPEED = 45;
+const RELEASE_SPEED = 12;
+const RELEASE_VELOCITY_WINDOW_MS = 80;
 const PHYSICS_CONFIG = createGalaxyPhysicsConfig();
 const WARMUP_PHYSICS_CONFIG = createGalaxyPhysicsConfig({
   repulsionStrength: PHYSICS_CONFIG.repulsionStrength * 1.5,
@@ -283,6 +286,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       for (const node of nodesRef.current) {
         node.vx = 0;
         node.vy = 0;
+        node.recovery = 0;
       }
       lastFrameRef.current = null;
     };
@@ -396,6 +400,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         anchors,
         ambient: precomputeAmbientMotion(p.id),
         drag: null,
+        recovery: 0,
       };
     });
 
@@ -1087,8 +1092,10 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         draggedNode.vx = 0;
         draggedNode.vy = 0;
       } else if (wasDrag) {
-        draggedNode.vx = drag.releaseVx;
-        draggedNode.vy = drag.releaseVy;
+        const releaseIsFresh = e.timeStamp - drag.lastMoveAt <= RELEASE_VELOCITY_WINDOW_MS;
+        draggedNode.vx = releaseIsFresh ? drag.releaseVx : 0;
+        draggedNode.vy = releaseIsFresh ? drag.releaseVy : 0;
+        recoverGalaxyAfterDrag(nodesRef.current, draggedNode);
       }
     }
 
@@ -1126,6 +1133,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       drag.node.drag = null;
       drag.node.vx = 0;
       drag.node.vy = 0;
+      recoverGalaxyAfterDrag(nodesRef.current, drag.node);
     }
     drag.mode = "none";
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
