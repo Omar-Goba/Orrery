@@ -3,7 +3,21 @@ import type { PaperRecord } from "../api/client";
 import type { SimilarityGraph } from "../api/client";
 import { StarfieldCanvas } from "./StarfieldCanvas";
 import { cometStrength } from "../lib/galaxy";
-import { buildConstellationEdges } from "../lib/constellation";
+import {
+  buildConstellationEdges,
+  constellationMembershipSignature,
+  type ConstellationEdge,
+} from "../lib/constellation";
+import {
+  createGalaxyPhysicsConfig,
+  createGalaxyPhysicsState,
+  precomputeAmbientMotion,
+  precomputeHierarchyAnchors,
+  stepGalaxyPhysics,
+  type GalaxyAnchor,
+  type GalaxyAmbientMotion,
+  type GalaxyDragConstraint,
+} from "../lib/galaxyPhysics";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 interface GNode {
@@ -15,6 +29,9 @@ interface GNode {
   paper: PaperRecord;
   l1: string;
   colorIdx: number;
+  anchors: readonly GalaxyAnchor[];
+  ambient: GalaxyAmbientMotion;
+  drag: GalaxyDragConstraint | null;
   /** 1 = ingested right now, fading to 0 at 7 days old. Precomputed per build. */
   comet: number;
 }
@@ -103,19 +120,21 @@ const PALETTE = [
 const ROGUE_COLOR = { stroke: "#8b94a8", glow: "rgba(139,148,168,", dot: "rgba(139,148,168,0.8)" };
 
 // ── Physics ─────────────────────────────────────────────────────────────────
-const REPULSION  = 5500;
-const CENTER_K   = 0.014;   // base attraction; multiplied by (depth + 1) per level
-const DAMPING    = 0.86;
 const NODE_R     = 6;
-const SETTLE_AT  = 300;
-const MAX_FORCE  = 20;      // cap per-pair repulsion kick (px/tick)
-const MAX_SPEED  = 12;      // cap node velocity so the sim can't explode (px/tick)
 const ORBIT_DECAY = 0.50;   // each depth level's orbit radius = parent's × this
+const INITIAL_TOPOLOGY_WARMUP_SECONDS = 1;
+const REDUCED_MOTION_WARMUP_SECONDS = 1.25;
+const RELEASE_SPEED = 45;
+const PHYSICS_CONFIG = createGalaxyPhysicsConfig();
+const WARMUP_PHYSICS_CONFIG = createGalaxyPhysicsConfig({
+  repulsionStrength: PHYSICS_CONFIG.repulsionStrength * 1.5,
+  ambientAcceleration: PHYSICS_CONFIG.ambientAcceleration * 1.25,
+});
 
 // ── View transform constants ────────────────────────────────────────────────
 const MIN_K = 0.4;
 const MAX_K = 6;
-const DRAG_THRESHOLD = 4; // px — below this, mousedown→mouseup is a click, not a pan
+const DRAG_THRESHOLD = 4; // px — below this, pointer-down→pointer-up remains a click
 const CAMERA_ANIM_MS = 600;
 
 function jitter(id: string, axis: number): number {
@@ -124,25 +143,6 @@ function jitter(id: string, axis: number): number {
     hash = Math.imul(31, hash) + id.charCodeAt(i);
   }
   return ((hash >>> 0) / 0xffffffff - 0.5) * 80;
-}
-
-// Deterministic 0..1 pseudo-random value derived from a string + axis, reusing
-// the same hashing technique as jitter() but normalized to [0, 1) instead of
-// a spawn offset in px. Handy for idle-drift phase/frequency and star seeds.
-function hash01(id: string, axis: number): number {
-  let hash = axis;
-  for (let i = 0; i < id.length; i++) {
-    hash = Math.imul(31, hash) + id.charCodeAt(i);
-  }
-  // Ids that only differ in a trailing digit (e.g. "star-1-8" vs "star-1-9")
-  // otherwise produce hashes 1 apart — an imperceptible change once divided
-  // down to [0,1). Avalanche the bits (Murmur3 fmix32) so every id scatters.
-  hash ^= hash >>> 16;
-  hash = Math.imul(hash, 0x85ebca6b);
-  hash ^= hash >>> 13;
-  hash = Math.imul(hash, 0xc2b2ae35);
-  hash ^= hash >>> 16;
-  return (hash >>> 0) / 0xffffffff;
 }
 
 function easeOutCubic(t: number): number {
@@ -166,21 +166,6 @@ function rampFade(k: number, kStart: number, kFull: number): number {
   if (k <= kStart) return 0;
   if (k >= kFull) return 1;
   return (k - kStart) / Math.max(0.0001, kFull - kStart);
-}
-
-// Render-only "breathing" wobble for settled nodes, deterministic per id so
-// it's stable across reloads. Shared by node draw and constellation edges so
-// lines stay pinned to stars instead of lagging behind the wobble.
-function driftOffset(id: string, idleT: number): { dx: number; dy: number } {
-  const freq = 0.15 + hash01(id, 11) * 0.1; // ~4-8s period range
-  const ampX = 2 + hash01(id, 12) * 2;
-  const ampY = 2 + hash01(id, 13) * 2;
-  const phaseX = hash01(id, 14) * Math.PI * 2;
-  const phaseY = hash01(id, 15) * Math.PI * 2;
-  return {
-    dx: Math.sin(idleT * freq + phaseX) * ampX,
-    dy: Math.cos(idleT * freq + phaseY) * ampY,
-  };
 }
 
 let meteorIdSeq = 1;
@@ -243,12 +228,24 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   useEffect(() => { highlightPathRef.current = highlightPath; }, [highlightPath]);
 
   const nodesRef   = useRef<GNode[]>([]);
-  const constellationEdgesRef = useRef<[number, number][]>([]);
+  const nodesByIdRef = useRef<Map<string, GNode>>(new Map());
+  const constellationEdgesRef = useRef<ConstellationEdge[]>([]);
+  const constellationSignatureRef = useRef("");
+  const topologyPendingRef = useRef(false);
+  const topologyBuildAtRef = useRef(0);
   const leafCentersRef = useRef<Record<string, { x: number; y: number; count: number; colorIdx: number }>>({});
+  const lastLeafCenterUpdateRef = useRef(0);
   const centersRef = useRef<Record<string, CenterInfo>>({});
   const hovRef     = useRef<GNode | null>(null);
   const rafRef     = useRef<number>(0);
-  const tickRef    = useRef(0);
+  const physicsRef = useRef(createGalaxyPhysicsState());
+  const lastFrameRef = useRef<number | null>(null);
+  const reducedMotionRef = useRef(
+    typeof window !== "undefined" && (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false),
+  );
+  const reducedWarmupRemainingRef = useRef(
+    reducedMotionRef.current ? REDUCED_MOTION_WARMUP_SECONDS : 0,
+  );
   const [cursor, setCursor] = useState<"pointer" | "default" | "grabbing">("default");
 
   // ── View transform (pan/zoom) — ref-held, not React state (60fps loop) ────
@@ -256,13 +253,24 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   const cameraAnimRef = useRef<CameraAnim | null>(null);
 
   // ── Drag/pan bookkeeping ────────────────────────────────────────────────
-  const dragRef = useRef({
-    active: false,
-    moved: 0,
-    lastX: 0,
-    lastY: 0,
-    downX: 0,
-    downY: 0,
+  const dragRef = useRef<{
+    mode: "none" | "pan" | "node";
+    pointerId: number;
+    node: GNode | null;
+    moved: number;
+    lastX: number;
+    lastY: number;
+    downX: number;
+    downY: number;
+    lastWorldX: number;
+    lastWorldY: number;
+    lastMoveAt: number;
+    releaseVx: number;
+    releaseVy: number;
+  }>({
+    mode: "none", pointerId: -1, node: null, moved: 0,
+    lastX: 0, lastY: 0, downX: 0, downY: 0,
+    lastWorldX: 0, lastWorldY: 0, lastMoveAt: 0, releaseVx: 0, releaseVy: 0,
   });
 
   // ── Citation pulses + meteors (imperative API) ─────────────────────────
@@ -270,12 +278,33 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   const meteorsRef = useRef<Map<number, Meteor>>(new Map());
   const ignitionsRef = useRef<Ignition[]>([]);
 
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = (event: MediaQueryListEvent) => {
+      reducedMotionRef.current = event.matches;
+      reducedWarmupRemainingRef.current = 0;
+      for (const node of nodesRef.current) {
+        node.vx = 0;
+        node.vy = 0;
+      }
+      lastFrameRef.current = null;
+    };
+    reducedMotionRef.current = query.matches;
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
   // ── Build graph ─────────────────────────────────────────────────────────
   const buildGraph = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !papers.length) {
       nodesRef.current = [];
+      nodesByIdRef.current = new Map();
       constellationEdgesRef.current = [];
+      constellationSignatureRef.current = "";
+      topologyPendingRef.current = false;
+      leafCentersRef.current = {};
       centersRef.current = {};
       return;
     }
@@ -334,11 +363,27 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     placeCenters("__ROOT__", left + availW / 2, top + availH / 2, R0, 0);
     centersRef.current = centers;
 
-    // ── Build nodes ───────────────────────────────────────────────────────
+    // ── Reconcile nodes by paper ID ───────────────────────────────────────
+    const previousById = nodesByIdRef.current;
+    const hadNodes = previousById.size > 0;
+    let addedNode = false;
     const nodes: GNode[] = papers.map(p => {
       const l1 = p.cluster_path?.split("/")[0] ?? "Unclustered";
       const colorIdx = l1ColorIdx[l1] ?? 0;
-      // Start near the deepest available center for each paper
+      const path = p.cluster_path ?? "Unclustered";
+      const anchors = precomputeHierarchyAnchors(path, centers);
+      const existing = previousById.get(p.id);
+      if (existing) {
+        existing.paper = p;
+        existing.l1 = l1;
+        existing.colorIdx = colorIdx;
+        existing.comet = cometStrength(p.ingested_at);
+        existing.anchors = anchors;
+        return existing;
+      }
+
+      addedNode = true;
+      // Only genuinely new papers spawn near their deepest available center.
       const home = centers[p.cluster_path ?? l1] ?? centers[l1] ?? { x: W / 2, y: H / 2 };
       return {
         id: p.id,
@@ -347,13 +392,34 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         vx: 0, vy: 0,
         paper: p, l1, colorIdx,
         comet: cometStrength(p.ingested_at),
+        anchors,
+        ambient: precomputeAmbientMotion(p.id),
+        drag: null,
       };
     });
 
     nodesRef.current = nodes;
-    constellationEdgesRef.current = []; // rebuilt once physics settles — see the render loop
-    tickRef.current  = 0;
-    hovRef.current   = null;
+    nodesByIdRef.current = new Map(nodes.map(node => [node.id, node]));
+    if (hovRef.current) hovRef.current = nodesByIdRef.current.get(hovRef.current.id) ?? null;
+
+    const membership = nodes.map(node => ({
+      id: node.id,
+      x: node.x,
+      y: node.y,
+      leaf: node.paper.cluster_path ?? "Unclustered",
+    }));
+    const signature = constellationMembershipSignature(membership);
+    if (signature !== constellationSignatureRef.current) {
+      constellationSignatureRef.current = signature;
+      constellationEdgesRef.current = [];
+      topologyPendingRef.current = true;
+      topologyBuildAtRef.current = physicsRef.current.elapsed
+        + (hadNodes ? 0 : INITIAL_TOPOLOGY_WARMUP_SECONDS);
+    }
+    if (reducedMotionRef.current && addedNode) {
+      reducedWarmupRemainingRef.current = REDUCED_MOTION_WARMUP_SECONDS;
+    }
+    lastFrameRef.current = null;
 
     if (!didInitialDollyRef.current && initialViewRef.current) {
       didInitialDollyRef.current = true;
@@ -456,6 +522,10 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     if (!ctx) return;
 
     const loop = () => {
+      if (document.visibilityState !== "visible") {
+        lastFrameRef.current = null;
+        return;
+      }
       const now = performance.now();
       const W = canvas.width;
       const H = canvas.height;
@@ -463,77 +533,60 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
 
       const nodes   = nodesRef.current;
       const centers = centersRef.current;
-      const settled = tickRef.current >= SETTLE_AT;
 
       // ── Physics ────────────────────────────────────────────────────────
-      if (!settled && nodes.length) {
-        // Node–node repulsion
-        for (let i = 0; i < nodes.length; i++) {
-          for (let j = i + 1; j < nodes.length; j++) {
-            const dx = nodes[j].x - nodes[i].x;
-            const dy = nodes[j].y - nodes[i].y;
-            const d2 = dx * dx + dy * dy;
-            const d  = Math.sqrt(d2) || 0.1;
-            if (d < 200) {
-              const f  = Math.min(REPULSION / (d2 + 1), MAX_FORCE);
-              const nx = (dx / d) * f;
-              const ny = (dy / d) * f;
-              nodes[i].vx -= nx; nodes[i].vy -= ny;
-              nodes[j].vx += nx; nodes[j].vy += ny;
-            }
-          }
-        }
-
-        // Multi-level centroid attraction
-        for (const n of nodes) {
-          const parts = (n.paper.cluster_path ?? n.l1).split("/");
-          for (let d = 0; d < parts.length; d++) {
-            const prefix = parts.slice(0, d + 1).join("/");
-            const c = centers[prefix];
-            if (!c) continue;
-            // Deeper level = stronger pull (more specific cluster)
-            const k = CENTER_K * (d + 1);
-            n.vx += (c.x - n.x) * k;
-            n.vy += (c.y - n.y) * k;
-          }
-        }
-
-        // Integrate + bounce off the panel-safe area
+      const previousFrame = lastFrameRef.current;
+      const dt = previousFrame === null ? 0 : (now - previousFrame) / 1000;
+      lastFrameRef.current = now;
+      const reducedMotion = reducedMotionRef.current;
+      const shouldSimulate = !reducedMotion || reducedWarmupRemainingRef.current > 0;
+      if (shouldSimulate && nodes.length && dt > 0) {
         const { left, right, top, bottom } = insetsRef.current;
-        for (const n of nodes) {
-          n.vx *= DAMPING; n.vy *= DAMPING;
-          const speed = Math.hypot(n.vx, n.vy);
-          if (speed > MAX_SPEED) {
-            n.vx *= MAX_SPEED / speed;
-            n.vy *= MAX_SPEED / speed;
+        stepGalaxyPhysics(
+          physicsRef.current,
+          nodes,
+          { minX: left, maxX: W - right, minY: top, maxY: H - bottom },
+          dt,
+          physicsRef.current.elapsed < INITIAL_TOPOLOGY_WARMUP_SECONDS
+            ? WARMUP_PHYSICS_CONFIG
+            : PHYSICS_CONFIG,
+        );
+        if (reducedMotion) {
+          reducedWarmupRemainingRef.current = Math.max(0, reducedWarmupRemainingRef.current - Math.min(dt, PHYSICS_CONFIG.maxDt));
+          if (reducedWarmupRemainingRef.current === 0) {
+            for (const node of nodes) { node.vx = 0; node.vy = 0; }
           }
-          n.x  += n.vx;   n.y  += n.vy;
-          if (n.x < left)       { n.x = left;       n.vx *= -0.3; }
-          if (n.x > W - right)  { n.x = W - right;  n.vx *= -0.3; }
-          if (n.y < top)        { n.y = top;        n.vy *= -0.3; }
-          if (n.y > H - bottom) { n.y = H - bottom; n.vy *= -0.3; }
         }
-        tickRef.current++;
-        // Positions are meaningless before physics rests — build the per-leaf
-        // constellation MST exactly once, right as the sim settles. A fresh
-        // `buildGraph` (new upload, refetch) resets tickRef so this reruns.
-        if (tickRef.current === SETTLE_AT) {
-          constellationEdgesRef.current = buildConstellationEdges(
-            nodes.map(n => ({ id: n.id, x: n.x, y: n.y, leaf: n.paper.cluster_path ?? "Unclustered" }))
-          );
-          const leafAgg: Record<string, { sx: number; sy: number; count: number; colorIdx: number }> = {};
-          for (const n of nodes) {
-            const leaf = n.paper.cluster_path ?? "Unclustered";
-            if (leaf === "Misc" || leaf === "Unclustered") continue;
-            const agg = leafAgg[leaf] ?? (leafAgg[leaf] = { sx: 0, sy: 0, count: 0, colorIdx: n.colorIdx });
-            agg.sx += n.x; agg.sy += n.y; agg.count++;
-          }
-          const centers: typeof leafCentersRef.current = {};
-          for (const [leaf, agg] of Object.entries(leafAgg)) {
-            centers[leaf] = { x: agg.sx / agg.count, y: agg.sy / agg.count, count: agg.count, colorIdx: agg.colorIdx };
-          }
-          leafCentersRef.current = centers;
+      }
+
+      if (topologyPendingRef.current &&
+          physicsRef.current.elapsed >= topologyBuildAtRef.current) {
+        constellationEdgesRef.current = buildConstellationEdges(
+          nodes.map(node => ({
+            id: node.id,
+            x: node.x,
+            y: node.y,
+            leaf: node.paper.cluster_path ?? "Unclustered",
+          })),
+        );
+        topologyPendingRef.current = false;
+      }
+
+      // Labels follow moving members without creating per-frame React state.
+      if (now - lastLeafCenterUpdateRef.current >= 200) {
+        lastLeafCenterUpdateRef.current = now;
+        const leafAgg: Record<string, { sx: number; sy: number; count: number; colorIdx: number }> = {};
+        for (const node of nodes) {
+          const leaf = node.paper.cluster_path ?? "Unclustered";
+          if (leaf === "Misc" || leaf === "Unclustered") continue;
+          const agg = leafAgg[leaf] ?? (leafAgg[leaf] = { sx: 0, sy: 0, count: 0, colorIdx: node.colorIdx });
+          agg.sx += node.x; agg.sy += node.y; agg.count++;
         }
+        const leafCenters: typeof leafCentersRef.current = {};
+        for (const [leaf, agg] of Object.entries(leafAgg)) {
+          leafCenters[leaf] = { x: agg.sx / agg.count, y: agg.sy / agg.count, count: agg.count, colorIdx: agg.colorIdx };
+        }
+        leafCentersRef.current = leafCenters;
       }
 
       // ── Camera animation (glide toward a focus target) ──────────────────
@@ -586,13 +639,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       }
       const dimFactor = hasSimHighlight ? 0.18 : 1;
 
-      // ── Idle drift ("breathing") — settled nodes get a tiny render-only
-      // sinusoidal wobble, derived deterministically from id so it's stable
-      // across reloads. Does not feed back into n.x/n.y or velocity. Shared
-      // by nodes and constellation edges via driftOffset() so lines stay
-      // pinned to stars. ───────────────────────────────────────────────────
-      const idleT = now / 1000;
-
       // ── Cluster auras (L1 large, L2 smaller, deeper = skip) ───────────
       // Ghost label alpha fades in/out with k: most visible around k≈1,
       // fades toward 0 both zoomed way out and zoomed in close.
@@ -628,19 +674,16 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         }
       }
 
-      // ── Constellation edges — per-leaf MST, thin cluster-hue lines pinned
-      // to the same idle-drifted positions the stars render at. ──────────
+      // ── Constellation edges — stable ID topology with live endpoints. ──
       const alpha = 0.22 * (hasSimHighlight ? dimFactor : 1);
-      for (const [ai, bi] of constellationEdgesRef.current) {
-        const a = nodes[ai];
-        const b = nodes[bi];
+      for (const [aId, bId] of constellationEdgesRef.current) {
+        const a = nodesByIdRef.current.get(aId);
+        const b = nodesByIdRef.current.get(bId);
         if (!a || !b) continue;
         const col = PALETTE[a.colorIdx % PALETTE.length];
-        const offA = settled ? driftOffset(a.id, idleT) : { dx: 0, dy: 0 };
-        const offB = settled ? driftOffset(b.id, idleT) : { dx: 0, dy: 0 };
         ctx.beginPath();
-        ctx.moveTo(a.x + offA.dx, a.y + offA.dy);
-        ctx.lineTo(b.x + offB.dx, b.y + offB.dy);
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
         ctx.strokeStyle = col.glow + alpha.toFixed(3) + ")";
         ctx.lineWidth = 1;
         ctx.stroke();
@@ -720,13 +763,8 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         const rogueDim = isRogue ? 0.7 : 1;
         const r     = isHov ? NODE_R + 4 : NODE_R;
 
-        let renderX = n.x;
-        let renderY = n.y;
-        if (settled) {
-          const off = driftOffset(n.id, idleT);
-          renderX = n.x + off.dx;
-          renderY = n.y + off.dy;
-        }
+        const renderX = n.x;
+        const renderY = n.y;
 
         // Comet trail (recency) — fixed shared angle, drawn before the star
         // itself so the star's halo sits on top of the trail's near end.
@@ -930,8 +968,19 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       rafRef.current = requestAnimationFrame(loop);
     };
 
-    rafRef.current = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafRef.current);
+    const start = () => {
+      cancelAnimationFrame(rafRef.current);
+      lastFrameRef.current = null;
+      if (document.visibilityState === "visible") rafRef.current = requestAnimationFrame(loop);
+    };
+    const onVisibilityChange = () => start();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    start();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      cancelAnimationFrame(rafRef.current);
+      lastFrameRef.current = null;
+    };
   }, [active]);
 
   // ── Screen <-> world coordinate helpers ──────────────────────────────────
@@ -940,8 +989,19 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     return { x: (mx - tx) / k, y: (my - ty) / k };
   }, []);
 
-  // ── Mouse events ─────────────────────────────────────────────────────────
-  const onMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const hitNode = useCallback((mx: number, my: number) => {
+    const world = toWorld(mx, my);
+    let closest: GNode | null = null;
+    let minD = 26 / viewRef.current.k;
+    for (const node of nodesRef.current) {
+      const distance = Math.hypot(node.x - world.x, node.y - world.y);
+      if (distance < minD) { minD = distance; closest = node; }
+    }
+    return closest;
+  }, [toWorld]);
+
+  // ── Pointer events: node drag or empty-canvas pan ────────────────────────
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -949,57 +1009,112 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     const my = e.clientY - rect.top;
 
     const drag = dragRef.current;
-    if (drag.active) {
+    if (drag.mode !== "none" && drag.pointerId === e.pointerId) {
       const dx = mx - drag.lastX;
       const dy = my - drag.lastY;
       drag.moved = Math.hypot(mx - drag.downX, my - drag.downY);
       drag.lastX = mx;
       drag.lastY = my;
-      if (drag.moved > DRAG_THRESHOLD) {
+      if (drag.mode === "pan" && drag.moved > DRAG_THRESHOLD) {
+        cameraAnimRef.current = null;
         viewRef.current = {
           k: viewRef.current.k,
           tx: viewRef.current.tx + dx,
           ty: viewRef.current.ty + dy,
         };
         setCursor("grabbing");
+      } else if (drag.mode === "node" && drag.node) {
+        const world = toWorld(mx, my);
+        const elapsed = Math.max(1, e.timeStamp - drag.lastMoveAt) / 1000;
+        const rawVx = (world.x - drag.lastWorldX) / elapsed;
+        const rawVy = (world.y - drag.lastWorldY) / elapsed;
+        const speed = Math.hypot(rawVx, rawVy);
+        const scale = speed > RELEASE_SPEED ? RELEASE_SPEED / speed : 1;
+        drag.releaseVx = rawVx * scale;
+        drag.releaseVy = rawVy * scale;
+        drag.lastWorldX = world.x;
+        drag.lastWorldY = world.y;
+        drag.lastMoveAt = e.timeStamp;
+        drag.node.drag = world;
+        drag.node.x = world.x;
+        drag.node.y = world.y;
+        setCursor("grabbing");
       }
       return;
     }
 
-    const world = toWorld(mx, my);
-    let closest: GNode | null = null;
-    let minD = 26 / viewRef.current.k;
-    for (const n of nodesRef.current) {
-      const d = Math.hypot(n.x - world.x, n.y - world.y);
-      if (d < minD) { minD = d; closest = n; }
-    }
+    if (e.pointerType !== "mouse" && e.pointerType !== "pen") return;
+    const closest = hitNode(mx, my);
     if (closest?.id !== hovRef.current?.id) {
       hovRef.current = closest;
       setCursor(closest ? "pointer" : "default");
       onHover?.(closest?.paper ?? null);
     }
-  }, [onHover, toWorld]);
+  }, [hitNode, onHover, toWorld]);
 
-  const onMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    dragRef.current = { active: true, moved: 0, lastX: mx, lastY: my, downX: mx, downY: my };
-  }, []);
+    const node = hitNode(mx, my);
+    const world = toWorld(mx, my);
+    dragRef.current = {
+      mode: node ? "node" : "pan",
+      pointerId: e.pointerId,
+      node,
+      moved: 0,
+      lastX: mx,
+      lastY: my,
+      downX: mx,
+      downY: my,
+      lastWorldX: world.x,
+      lastWorldY: world.y,
+      lastMoveAt: e.timeStamp,
+      releaseVx: 0,
+      releaseVy: 0,
+    };
+    if (node) {
+      node.drag = world;
+      cameraAnimRef.current = null;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [hitNode, toWorld]);
 
-  const onMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
-    const wasDrag = drag.active && drag.moved > DRAG_THRESHOLD;
-    drag.active = false;
-    setCursor(hovRef.current ? "pointer" : "default");
+    if (drag.mode === "none" || drag.pointerId !== e.pointerId) return;
+    const wasDrag = drag.moved > DRAG_THRESHOLD;
+    const draggedNode = drag.node;
+    const mode = drag.mode;
+    drag.mode = "none";
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+
+    if (draggedNode) {
+      draggedNode.drag = null;
+      if (reducedMotionRef.current) {
+        const home = draggedNode.anchors[draggedNode.anchors.length - 1];
+        if (home) { draggedNode.x = home.x; draggedNode.y = home.y; }
+        draggedNode.vx = 0;
+        draggedNode.vy = 0;
+      } else if (wasDrag) {
+        draggedNode.vx = drag.releaseVx;
+        draggedNode.vy = drag.releaseVy;
+      }
+    }
+
+    const hoverNode = (e.pointerType === "mouse" || e.pointerType === "pen")
+      ? hitNode(e.clientX - e.currentTarget.getBoundingClientRect().left, e.clientY - e.currentTarget.getBoundingClientRect().top)
+      : null;
+    hovRef.current = hoverNode;
+    setCursor(hoverNode ? "pointer" : "default");
     if (wasDrag) return;
 
     // Treat as click: either open the hovered paper, or hit-test a cluster
     // aura/label to trigger a camera glide.
-    const p = hovRef.current?.paper;
-    if (p) { onOpenPaper?.(p); return; }
+    if (mode === "node" && draggedNode) { onOpenPaper?.(draggedNode.paper); return; }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1015,10 +1130,23 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         return;
       }
     }
-  }, [onOpenPaper, toWorld, glideToClusterPath]);
+  }, [glideToClusterPath, hitNode, onOpenPaper, toWorld]);
 
-  const onMouseLeave = useCallback(() => {
-    dragRef.current.active = false;
+  const onPointerCancel = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (drag.mode === "none" || drag.pointerId !== e.pointerId) return;
+    if (drag.node) {
+      drag.node.drag = null;
+      drag.node.vx = 0;
+      drag.node.vy = 0;
+    }
+    drag.mode = "none";
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    setCursor("default");
+  }, []);
+
+  const onPointerLeave = useCallback(() => {
+    if (dragRef.current.mode !== "none") return;
     hovRef.current = null;
     setCursor("default");
     onHover?.(null);
@@ -1168,11 +1296,12 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full block"
-        style={{ cursor }}
-        onMouseMove={onMouseMove}
-        onMouseDown={onMouseDown}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseLeave}
+        style={{ cursor, touchAction: "none" }}
+        onPointerMove={onPointerMove}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={onPointerLeave}
         onWheel={onWheel}
         onDoubleClick={onDoubleClick}
       />
