@@ -89,8 +89,6 @@ export interface IngestOrbHandle {
 export interface PaperGraphHandle {
   pulseCitations(paperIds: string[]): void;
   spawnIngestOrb(seed: string): IngestOrbHandle;
-  /** Temporary Wave 3 bridge for the untouched scene; Agent 5 removes it. */
-  spawnMeteor(): { arrive: (clusterPath: string) => void; cancel: () => void };
   focusCluster(path: string | null): void; // null = zoom-to-fit / reset view
   /** One-shot flare when a paper flips toread→read. De-ignition gets no animation. */
   igniteStar(paperId: string): void;
@@ -1248,14 +1246,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     },
     spawnIngestOrb(seed: string) {
       return spawnIngestOrbLifecycle(seed);
-    },
-    spawnMeteor() {
-      const legacy = spawnIngestOrbLifecycle("legacy-scene-bridge");
-      return {
-        // Agent 5 supplies the final record; until then, never invent a destination.
-        arrive: () => legacy.cancel(),
-        cancel: legacy.cancel,
-      };
     },
     focusCluster(path: string | null) {
       glideToClusterPath(path);

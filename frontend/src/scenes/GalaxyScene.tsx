@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, RefreshCw, FolderTree, Network, MessageSquare, PanelLeftClose, ScanSearch, Search, HardDrive } from "lucide-react";
 import clsx from "clsx";
 import { TreeView } from "../components/TreeView";
-import { PaperGraph, type PaperGraphHandle } from "../components/PaperGraph";
+import { PaperGraph, type IngestOrbHandle, type PaperGraphHandle } from "../components/PaperGraph";
 import { AgentPortal } from "../components/AgentPortal";
 import { PdfReader } from "../components/PdfReader";
 import { ReadNext } from "../components/ReadNext";
@@ -61,7 +61,7 @@ export function GalaxyScene({
   const graphRef    = useRef<PaperGraphHandle>(null);
   const focusTokenRef = useRef(0);
   const oracleTokenRef = useRef(0);
-  const meteorRef   = useRef<{ arrive: (clusterPath: string) => void; cancel: () => void } | null>(null);
+  const ingestOrbRef = useRef<IngestOrbHandle | null>(null);
 
   // Owner mode always reads the authenticated user's own galaxy. Observer mode
   // only has one public target: Omar's Keeper tour.
@@ -157,18 +157,27 @@ export function GalaxyScene({
     graphRef.current?.pulseCitations(paperIds);
   }, []);
 
-  const handleUploadStart = useCallback(() => {
-    meteorRef.current = graphRef.current?.spawnMeteor() ?? null;
+  const handleUploadStart = useCallback((seed: string) => {
+    ingestOrbRef.current?.cancel();
+    ingestOrbRef.current = graphRef.current?.spawnIngestOrb(seed) ?? null;
   }, []);
 
-  const handleUploadArrive = useCallback((clusterPath: string) => {
-    meteorRef.current?.arrive(clusterPath);
-    meteorRef.current = null;
+  const handleUploadProgress = useCallback((progress: { step: string; pct: number }) => {
+    ingestOrbRef.current?.update(progress);
+  }, []);
+
+  const handleUploadResolve = useCallback((paper: PaperRecord) => {
+    ingestOrbRef.current?.resolve(paper);
   }, []);
 
   const handleUploadCancel = useCallback(() => {
-    meteorRef.current?.cancel();
-    meteorRef.current = null;
+    ingestOrbRef.current?.cancel();
+    ingestOrbRef.current = null;
+  }, []);
+
+  useEffect(() => () => {
+    ingestOrbRef.current?.cancel();
+    ingestOrbRef.current = null;
   }, []);
 
   const handleFocusCluster = useCallback((path: string) => {
@@ -292,7 +301,8 @@ export function GalaxyScene({
           onOpenPaperId={openPaperById}
           onCitations={handleCitations}
           onUploadStart={handleUploadStart}
-          onUploadArrive={handleUploadArrive}
+          onUploadProgress={handleUploadProgress}
+          onUploadResolve={handleUploadResolve}
           onUploadCancel={handleUploadCancel}
           apiMode={apiMode}
           disableUpload={isObserver}

@@ -75,7 +75,6 @@ describe("TourController", () => {
     const graphRef = useRef<PaperGraphHandle>({
       pulseCitations: () => {},
       spawnIngestOrb: () => ({ update: () => {}, resolve: () => {}, cancel: () => {} }),
-      spawnMeteor: () => ({ arrive: () => {}, cancel: () => {} }),
       focusCluster,
       igniteStar: () => {},
     });
