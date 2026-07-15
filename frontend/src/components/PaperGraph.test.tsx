@@ -132,6 +132,25 @@ describe("PaperGraph living interaction", () => {
     expect(onOpenPaper).toHaveBeenCalledWith(expect.objectContaining({ id: target.id }));
   });
 
+  it("snaps a canceled reduced-motion drag back to its anchor", () => {
+    reducedMotion = true;
+    const onOpenPaper = vi.fn();
+    const target = paper("paper-a", "Alpha/Leaf");
+    const { container } = render(<PaperGraph papers={[target]} onOpenPaper={onOpenPaper} />);
+    const canvas = container.querySelectorAll("canvas")[1];
+    const startX = 400 + jitter(target.id, 1);
+    const startY = 79.5 + jitter(target.id, 2);
+
+    fireEvent.pointerDown(canvas, { clientX: startX, clientY: startY, pointerId: 6, pointerType: "touch", button: 0 });
+    fireEvent.pointerMove(canvas, { clientX: startX + 60, clientY: startY + 40, pointerId: 6, pointerType: "touch" });
+    fireEvent.pointerCancel(canvas, { clientX: startX + 60, clientY: startY + 40, pointerId: 6, pointerType: "touch" });
+
+    expect(captured.has(6)).toBe(false);
+    fireEvent.pointerDown(canvas, { clientX: 400, clientY: 79.5, pointerId: 7, pointerType: "mouse", button: 0 });
+    fireEvent.pointerUp(canvas, { clientX: 400, clientY: 79.5, pointerId: 7, pointerType: "mouse", button: 0 });
+    expect(onOpenPaper).toHaveBeenCalledWith(expect.objectContaining({ id: target.id }));
+  });
+
   it("renders a first-upload orb with no nodes and makes cleanup callbacks idempotent", () => {
     let frame: FrameRequestCallback | undefined;
     const gradient = { addColorStop: vi.fn() };

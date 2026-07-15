@@ -1091,6 +1091,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         if (home) { draggedNode.x = home.x; draggedNode.y = home.y; }
         draggedNode.vx = 0;
         draggedNode.vy = 0;
+        draggedNode.recovery = 0;
       } else if (wasDrag) {
         const releaseIsFresh = e.timeStamp - drag.lastMoveAt <= RELEASE_VELOCITY_WINDOW_MS;
         draggedNode.vx = releaseIsFresh ? drag.releaseVx : 0;
@@ -1133,7 +1134,13 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       drag.node.drag = null;
       drag.node.vx = 0;
       drag.node.vy = 0;
-      recoverGalaxyAfterDrag(nodesRef.current, drag.node);
+      if (reducedMotionRef.current) {
+        const home = drag.node.anchors[drag.node.anchors.length - 1];
+        if (home) { drag.node.x = home.x; drag.node.y = home.y; }
+        drag.node.recovery = 0;
+      } else {
+        recoverGalaxyAfterDrag(nodesRef.current, drag.node);
+      }
     }
     drag.mode = "none";
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
