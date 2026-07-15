@@ -18,6 +18,18 @@ import {
   type GalaxyAmbientMotion,
   type GalaxyDragConstraint,
 } from "../lib/galaxyPhysics";
+import { getPhaseEnvelope, type IngestProgress } from "../lib/ingestMotion";
+import {
+  cancelIngestOrb,
+  createIngestOrbState,
+  ingestOrbOpacity,
+  resolveIngestOrb,
+  shouldRemoveIngestOrb,
+  stepIngestOrb,
+  suppressedPaperId,
+  updateIngestOrb,
+  type IngestOrbState,
+} from "../lib/ingestOrbController";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 interface GNode {
@@ -68,33 +80,16 @@ interface CitationPulse {
   duration: number;
 }
 
-interface Meteor {
-  id: number;
-  // Current position (world space once in-flight target known, else screen space drift)
-  x: number;
-  y: number;
-  // Drift/idle state while cluster unknown
-  driftPhaseX: number;
-  driftPhaseY: number;
-  edgeX: number;
-  edgeY: number;
-  centerX: number;
-  centerY: number;
-  // Arrival animation state
-  arriving: boolean;
-  arriveFrom: { x: number; y: number } | null;
-  arriveTo: { x: number; y: number } | null;
-  arriveStart: number;
-  arriveDuration: number;
-  landed: boolean;
-  landedAt: number;
-  canceled: boolean;
-  cancelStart: number;
-  createdAt: number;
+export interface IngestOrbHandle {
+  update(progress: IngestProgress): void;
+  resolve(paper: PaperRecord): void;
+  cancel(): void;
 }
 
 export interface PaperGraphHandle {
   pulseCitations(paperIds: string[]): void;
+  spawnIngestOrb(seed: string): IngestOrbHandle;
+  /** Temporary Wave 3 bridge for the untouched scene; Agent 5 removes it. */
   spawnMeteor(): { arrive: (clusterPath: string) => void; cancel: () => void };
   focusCluster(path: string | null): void; // null = zoom-to-fit / reset view
   /** One-shot flare when a paper flips toread→read. De-ignition gets no animation. */
@@ -168,7 +163,7 @@ function rampFade(k: number, kStart: number, kFull: number): number {
   return (k - kStart) / Math.max(0.0001, kFull - kStart);
 }
 
-let meteorIdSeq = 1;
+let ingestOrbIdSeq = 1;
 let pulseIdSeq = 1;
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -273,15 +268,18 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     lastWorldX: 0, lastWorldY: 0, lastMoveAt: 0, releaseVx: 0, releaseVy: 0,
   });
 
-  // ── Citation pulses + meteors (imperative API) ─────────────────────────
+  // ── Citation pulses + ingest orbs (imperative API) ─────────────────────
   const pulsesRef = useRef<CitationPulse[]>([]);
-  const meteorsRef = useRef<Map<number, Meteor>>(new Map());
+  const ingestOrbsRef = useRef<Map<number, IngestOrbState>>(new Map());
+  const orbPointerRef = useRef<{ x: number; y: number } | null>(null);
   const ignitionsRef = useRef<Ignition[]>([]);
 
   useEffect(() => {
     if (!window.matchMedia) return;
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
     const onChange = (event: MediaQueryListEvent) => {
+      const now = performance.now();
+      for (const orb of ingestOrbsRef.current.values()) cancelIngestOrb(orb, now);
       reducedMotionRef.current = event.matches;
       reducedWarmupRemainingRef.current = 0;
       for (const node of nodesRef.current) {
@@ -293,6 +291,11 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     reducedMotionRef.current = query.matches;
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => () => {
+    ingestOrbsRef.current.clear();
+    orbPointerRef.current = null;
   }, []);
 
   // ── Build graph ─────────────────────────────────────────────────────────
@@ -605,6 +608,39 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       }
 
       const view = viewRef.current;
+      const { left, right, top, bottom } = insetsRef.current;
+      const orbBounds = {
+        minX: left,
+        maxX: Math.max(left, W - right),
+        minY: top,
+        maxY: Math.max(top, H - bottom),
+      };
+      const explorationAnchors = Object.entries(centers)
+        .filter(([, center]) => center.depth === 0)
+        .map(([path, center]) => ({ path, x: center.x, y: center.y }));
+      for (const [id, orb] of ingestOrbsRef.current) {
+        try {
+          const finalNode = orb.finalPaperId ? nodesByIdRef.current.get(orb.finalPaperId) : null;
+          stepIngestOrb(orb, {
+            now,
+            dt,
+            bounds: orbBounds,
+            anchors: explorationAnchors,
+            pointer: orbPointerRef.current,
+            finalTarget: finalNode ? { x: finalNode.x, y: finalNode.y } : null,
+            reducedMotion,
+          });
+        } catch {
+          // Upload/data success never depends on this decorative lifecycle.
+          cancelIngestOrb(orb, now);
+        }
+        if (shouldRemoveIngestOrb(orb, now)) ingestOrbsRef.current.delete(id);
+      }
+      const suppressedIds = new Set<string>();
+      for (const orb of ingestOrbsRef.current.values()) {
+        const paperId = suppressedPaperId(orb);
+        if (paperId) suppressedIds.add(paperId);
+      }
 
       // ── Clear ─────────────────────────────────────────────────────────
       ctx.clearRect(0, 0, W, H);
@@ -620,7 +656,12 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         }
 
       if (!nodes.length) {
-        // Empty state is rendered by the parent overlay
+        // The upload lifecycle remains visible for a first-ever paper.
+        ctx.save();
+        ctx.translate(view.tx, view.ty);
+        ctx.scale(view.k, view.k);
+        for (const orb of ingestOrbsRef.current.values()) drawIngestOrb(ctx, orb, now);
+        ctx.restore();
         rafRef.current = requestAnimationFrame(loop);
         return;
       }
@@ -754,6 +795,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
 
       // ── Nodes ─────────────────────────────────────────────────────────
       for (const n of nodes) {
+        if (suppressedIds.has(n.id)) continue;
         const isHov = hov?.id === n.id;
         const isSimNeighbor = hasSimHighlight && simNeighborIds.has(n.id);
         const nodeDim = hasSimHighlight && !isHov && !isSimNeighbor ? dimFactor : 1;
@@ -903,62 +945,8 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         pulsesRef.current = remaining;
       }
 
-      // ── Meteors — in-flight uploads drifting toward center, or gliding to
-      // a resolved cluster center with a landing ripple. ──────────────────
-      if (meteorsRef.current.size) {
-        const toRemove: number[] = [];
-        for (const [id, m] of meteorsRef.current) {
-          if (m.canceled) {
-            const t = (now - m.cancelStart) / 400;
-            if (t >= 1) { toRemove.push(id); continue; }
-            drawMeteorGlyph(ctx, m.x, m.y, 1 - t);
-            continue;
-          }
-          if (m.landed) {
-            const t = (now - m.landedAt) / 700;
-            if (t >= 1) { toRemove.push(id); continue; }
-            // Ripple/flash
-            const rippleR = lerp(4, 60, easeOutCubic(t));
-            const rippleA = (1 - t) * 0.8;
-            ctx.beginPath();
-            ctx.arc(m.x, m.y, rippleR, 0, Math.PI * 2);
-            ctx.strokeStyle = `rgba(255,255,255,${rippleA.toFixed(3)})`;
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            const grd = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, rippleR * 0.6);
-            grd.addColorStop(0, `rgba(255,255,255,${(rippleA * 0.6).toFixed(3)})`);
-            grd.addColorStop(1, "transparent");
-            ctx.beginPath();
-            ctx.arc(m.x, m.y, rippleR * 0.6, 0, Math.PI * 2);
-            ctx.fillStyle = grd;
-            ctx.fill();
-            continue;
-          }
-          if (m.arriving && m.arriveFrom && m.arriveTo) {
-            const t = (now - m.arriveStart) / m.arriveDuration;
-            if (t >= 1) {
-              m.x = m.arriveTo.x; m.y = m.arriveTo.y;
-              m.landed = true; m.landedAt = now;
-              drawMeteorGlyph(ctx, m.x, m.y, 1);
-              continue;
-            }
-            const e = easeOutCubic(t);
-            m.x = lerp(m.arriveFrom.x, m.arriveTo.x, e);
-            m.y = lerp(m.arriveFrom.y, m.arriveTo.y, e);
-            drawMeteorGlyph(ctx, m.x, m.y, 1);
-            continue;
-          }
-          // Idle drift toward center with wobble (screen space; cluster unknown yet)
-          const dt = (now - m.createdAt) / 1000;
-          const driftT = Math.min(1, dt / 3); // settle near center over ~3s, then hover
-          const baseX = lerp(m.edgeX, m.centerX, driftT);
-          const baseY = lerp(m.edgeY, m.centerY, driftT);
-          m.x = baseX + Math.sin(dt * 0.8 + m.driftPhaseX) * 12;
-          m.y = baseY + Math.cos(dt * 0.7 + m.driftPhaseY) * 12;
-          drawMeteorGlyph(ctx, m.x, m.y, 1);
-        }
-        for (const id of toRemove) meteorsRef.current.delete(id);
-      }
+      // The orb is decorative and never participates in hit testing.
+      for (const orb of ingestOrbsRef.current.values()) drawIngestOrb(ctx, orb, now);
 
       ctx.restore();
 
@@ -1007,6 +995,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
+    orbPointerRef.current = toWorld(mx, my);
 
     const drag = dragRef.current;
     if (drag.mode !== "none" && drag.pointerId === e.pointerId) {
@@ -1146,6 +1135,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   }, []);
 
   const onPointerLeave = useCallback(() => {
+    orbPointerRef.current = null;
     if (dragRef.current.mode !== "none") return;
     hovRef.current = null;
     setCursor("default");
@@ -1188,6 +1178,47 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [glideToClusterPath]);
 
+  const spawnIngestOrbLifecycle = useCallback((seed: string): IngestOrbHandle => {
+    const canvas = canvasRef.current;
+    const W = canvas?.width || canvas?.offsetWidth || 800;
+    const H = canvas?.height || canvas?.offsetHeight || 600;
+    const { left, right, top, bottom } = insetsRef.current;
+    const id = ingestOrbIdSeq++;
+    const now = performance.now();
+    const orb = createIngestOrbState(id, seed, now, {
+      minX: left,
+      maxX: Math.max(left, W - right),
+      minY: top,
+      maxY: Math.max(top, H - bottom),
+    }, reducedMotionRef.current);
+    ingestOrbsRef.current.set(id, orb);
+
+    return {
+      update(progress) {
+        try {
+          const current = ingestOrbsRef.current.get(id);
+          if (current) updateIngestOrb(current, progress);
+        } catch {
+          const current = ingestOrbsRef.current.get(id);
+          if (current) cancelIngestOrb(current, performance.now());
+        }
+      },
+      resolve(paper) {
+        try {
+          const current = ingestOrbsRef.current.get(id);
+          if (current) resolveIngestOrb(current, paper, performance.now());
+        } catch {
+          const current = ingestOrbsRef.current.get(id);
+          if (current) cancelIngestOrb(current, performance.now());
+        }
+      },
+      cancel() {
+        const current = ingestOrbsRef.current.get(id);
+        if (current) cancelIngestOrb(current, performance.now());
+      },
+    };
+  }, []);
+
   // ── Imperative handle ────────────────────────────────────────────────────
   useImperativeHandle(ref, () => ({
     pulseCitations(paperIds: string[]) {
@@ -1215,68 +1246,15 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         });
       }
     },
+    spawnIngestOrb(seed: string) {
+      return spawnIngestOrbLifecycle(seed);
+    },
     spawnMeteor() {
-      const canvas = canvasRef.current;
-      const W = canvas?.width || canvas?.offsetWidth || 800;
-      const H = canvas?.height || canvas?.offsetHeight || 600;
-      const { k, tx, ty } = viewRef.current;
-      const id = meteorIdSeq++;
-
-      // Pick a random screen edge, convert to world space for the drift path.
-      const edgeSide = Math.floor(Math.random() * 4);
-      let ex: number, ey: number;
-      if (edgeSide === 0) { ex = -20; ey = Math.random() * H; }
-      else if (edgeSide === 1) { ex = W + 20; ey = Math.random() * H; }
-      else if (edgeSide === 2) { ex = Math.random() * W; ey = -20; }
-      else { ex = Math.random() * W; ey = H + 20; }
-      const edgeWorldX = (ex - tx) / k;
-      const edgeWorldY = (ey - ty) / k;
-      const centerWorldX = (W / 2 - tx) / k;
-      const centerWorldY = (H / 2 - ty) / k;
-
-      const meteor: Meteor = {
-        id,
-        x: edgeWorldX, y: edgeWorldY,
-        driftPhaseX: Math.random() * Math.PI * 2,
-        driftPhaseY: Math.random() * Math.PI * 2,
-        edgeX: edgeWorldX, edgeY: edgeWorldY,
-        centerX: centerWorldX, centerY: centerWorldY,
-        arriving: false, arriveFrom: null, arriveTo: null,
-        arriveStart: 0, arriveDuration: 750,
-        landed: false, landedAt: 0,
-        canceled: false, cancelStart: 0,
-        createdAt: performance.now(),
-      };
-      meteorsRef.current.set(id, meteor);
-
+      const legacy = spawnIngestOrbLifecycle("legacy-scene-bridge");
       return {
-        arrive: (clusterPath: string) => {
-          const m = meteorsRef.current.get(id);
-          if (!m) return;
-          const c = centersRef.current[clusterPath];
-          let toX: number, toY: number;
-          if (c) { toX = c.x; toY = c.y; }
-          else {
-            // Fall back to overall graph center if the cluster isn't in the
-            // current data yet (e.g. brand-new cluster not reflected in papers).
-            const canvas2 = canvasRef.current;
-            const W2 = canvas2?.width || canvas2?.offsetWidth || 800;
-            const H2 = canvas2?.height || canvas2?.offsetHeight || 600;
-            const { left, right, top, bottom } = insetsRef.current;
-            toX = left + (W2 - left - right) / 2;
-            toY = top + (H2 - top - bottom) / 2;
-          }
-          m.arriving = true;
-          m.arriveFrom = { x: m.x, y: m.y };
-          m.arriveTo = { x: toX, y: toY };
-          m.arriveStart = performance.now();
-        },
-        cancel: () => {
-          const m = meteorsRef.current.get(id);
-          if (!m) return;
-          m.canceled = true;
-          m.cancelStart = performance.now();
-        },
+        // Agent 5 supplies the final record; until then, never invent a destination.
+        arrive: () => legacy.cancel(),
+        cancel: legacy.cancel,
       };
     },
     focusCluster(path: string | null) {
@@ -1286,7 +1264,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       const n = nodesRef.current.find(n => n.id === paperId);
       if (n) ignitionsRef.current.push({ x: n.x, y: n.y, start: performance.now() });
     },
-  }), [glideToClusterPath]);
+  }), [glideToClusterPath, spawnIngestOrbLifecycle]);
 
   const getParallax = useCallback(() => viewRef.current, []);
 
@@ -1309,13 +1287,27 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   );
 });
 
-// Small comet-like glyph used for in-flight/arriving meteors: a bright core
-// with a soft radial glow, drawn in the current (world-space transformed)
-// context. `alpha` is an overall multiplier used for fade-out on cancel.
-function drawMeteorGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, alpha: number) {
-  const glowR = 22;
+function drawIngestOrb(ctx: CanvasRenderingContext2D, orb: IngestOrbState, now: number) {
+  if (orb.motion.phase === "complete") {
+    if (orb.reducedMotion) return;
+    const t = Math.min(1, (now - (orb.completedAt ?? now)) / 700);
+    const rippleR = lerp(4, 60, easeOutCubic(t));
+    const rippleA = (1 - t) * 0.8;
+    ctx.beginPath();
+    ctx.arc(orb.position.x, orb.position.y, rippleR, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,255,255,${rippleA.toFixed(3)})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    return;
+  }
+
+  const alpha = ingestOrbOpacity(orb, now);
+  if (alpha <= 0) return;
+  const envelope = getPhaseEnvelope(orb.motion.phase, orb.motion.pct, orb.reducedMotion);
+  const glowR = 18 + envelope.intensity * 8;
+  const { x, y } = orb.position;
   const grd = ctx.createRadialGradient(x, y, 0, x, y, glowR);
-  grd.addColorStop(0, `rgba(255,255,255,${(0.55 * alpha).toFixed(3)})`);
+  grd.addColorStop(0, `rgba(125,235,255,${(0.55 * alpha).toFixed(3)})`);
   grd.addColorStop(1, "transparent");
   ctx.beginPath();
   ctx.arc(x, y, glowR, 0, Math.PI * 2);
@@ -1325,7 +1317,7 @@ function drawMeteorGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, al
   ctx.beginPath();
   ctx.arc(x, y, 3.5, 0, Math.PI * 2);
   ctx.fillStyle = `rgba(255,255,255,${(0.95 * alpha).toFixed(3)})`;
-  ctx.shadowColor = "rgba(255,255,255,0.9)";
+  ctx.shadowColor = "rgba(125,235,255,0.9)";
   ctx.shadowBlur = 12;
   ctx.fill();
   ctx.shadowBlur = 0;

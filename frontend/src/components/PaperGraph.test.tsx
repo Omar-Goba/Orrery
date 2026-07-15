@@ -1,7 +1,8 @@
-import { fireEvent, render } from "@testing-library/react";
+import { createRef } from "react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperRecord } from "../api/client";
-import { PaperGraph } from "./PaperGraph";
+import { PaperGraph, type PaperGraphHandle } from "./PaperGraph";
 
 function paper(id: string, clusterPath: string): PaperRecord {
   return {
@@ -129,5 +130,34 @@ describe("PaperGraph living interaction", () => {
     fireEvent.pointerDown(canvas, { clientX: 400, clientY: 79.5, pointerId: 5, pointerType: "mouse", button: 0 });
     fireEvent.pointerUp(canvas, { clientX: 400, clientY: 79.5, pointerId: 5, pointerType: "mouse", button: 0 });
     expect(onOpenPaper).toHaveBeenCalledWith(expect.objectContaining({ id: target.id }));
+  });
+
+  it("renders a first-upload orb with no nodes and makes cleanup callbacks idempotent", () => {
+    let frame: FrameRequestCallback | undefined;
+    const gradient = { addColorStop: vi.fn() };
+    const context = {
+      clearRect: vi.fn(), fillRect: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), stroke: vi.fn(),
+      save: vi.fn(), restore: vi.fn(), translate: vi.fn(), scale: vi.fn(), createRadialGradient: vi.fn(() => gradient),
+      fillStyle: "", strokeStyle: "", lineWidth: 0, shadowColor: "", shadowBlur: 0,
+    };
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => context });
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { frame = callback; return 1; }));
+    const now = vi.spyOn(performance, "now").mockReturnValue(100);
+    const ref = createRef<PaperGraphHandle>();
+    const { unmount } = render(<PaperGraph ref={ref} papers={[]} />);
+    const orb = ref.current!.spawnIngestOrb("first.pdf:10");
+    orb.update({ step: "Embedding", pct: 50 });
+
+    act(() => frame?.(100));
+    expect(context.createRadialGradient).toHaveBeenCalled();
+    expect(context.arc).toHaveBeenCalled();
+
+    now.mockReturnValue(200);
+    act(() => motionListener?.({ matches: true } as MediaQueryListEvent));
+    expect(() => orb.cancel()).not.toThrow();
+    expect(() => orb.cancel()).not.toThrow();
+    unmount();
+    expect(() => orb.update({ step: "Late", pct: 100 })).not.toThrow();
+    expect(() => orb.resolve(paper("late", "Unclustered"))).not.toThrow();
   });
 });
