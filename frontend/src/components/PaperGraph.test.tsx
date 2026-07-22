@@ -156,7 +156,8 @@ describe("PaperGraph living interaction", () => {
     const gradient = { addColorStop: vi.fn() };
     const context = {
       clearRect: vi.fn(), fillRect: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), stroke: vi.fn(),
-      save: vi.fn(), restore: vi.fn(), translate: vi.fn(), scale: vi.fn(), createRadialGradient: vi.fn(() => gradient),
+      save: vi.fn(), restore: vi.fn(), translate: vi.fn(), scale: vi.fn(), setTransform: vi.fn(),
+      createRadialGradient: vi.fn(() => gradient),
       fillStyle: "", strokeStyle: "", lineWidth: 0, shadowColor: "", shadowBlur: 0,
     };
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => context });
@@ -188,6 +189,7 @@ describe("PaperGraph living interaction", () => {
     const context: Record<string, unknown> = {
       clearRect: vi.fn(), fillRect: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), stroke: vi.fn(),
       save: vi.fn(), restore: vi.fn(), translate: vi.fn(), scale: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
+      setTransform: vi.fn(),
       createRadialGradient: vi.fn(() => gradient),
       measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
       font: "",
@@ -198,16 +200,22 @@ describe("PaperGraph living interaction", () => {
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => context });
     vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { frame = callback; return 1; }));
     const target = { ...paper("fixed-title", "Alpha/Leaf"), author: "Ada", year: "2026" };
-    const { container } = render(<PaperGraph papers={[target]} selectedPaperId={target.id} />);
+    const { container, rerender } = render(<PaperGraph papers={[target]} />);
     const canvas = container.querySelectorAll("canvas")[1];
     const nodeX = 400 + jitter(target.id, 1);
     const nodeY = 79.5 + jitter(target.id, 2);
 
     fireEvent.wheel(canvas, { clientX: nodeX, clientY: nodeY, deltaY: -10_000 });
     act(() => frame?.(100));
+    expect(drawnText.some(call => call.text === "fixed-title")).toBe(false);
+
+    drawnText.length = 0;
+    rerender(<PaperGraph papers={[target]} selectedPaperId={target.id} />);
+    act(() => frame?.(200));
 
     expect(drawnText).toContainEqual({ text: "fixed-title", font: "600 12px Inter, system-ui, sans-serif" });
     expect(drawnText).toContainEqual({ text: "Ada · 2026", font: "400 11px Inter, system-ui, sans-serif" });
     expect(drawnText.filter(call => call.text === "fixed-title")).toHaveLength(1);
+    expect(context.setTransform).toHaveBeenCalledWith(1, 0, 0, 1, 0, 0);
   });
 });

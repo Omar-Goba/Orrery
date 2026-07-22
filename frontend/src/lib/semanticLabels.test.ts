@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   ellipsizeLabel,
   placeSemanticLabels,
-  semanticLabelBudget,
   type LabelCandidate,
 } from "./semanticLabels";
 
@@ -13,12 +12,6 @@ function candidate(id: string, x: number, y: number, priority = 0): LabelCandida
 }
 
 describe("semantic graph labels", () => {
-  it("keeps labels fixed to a zoom-based density budget", () => {
-    expect(semanticLabelBudget(1.8, 1280, 720)).toBe(0);
-    expect(semanticLabelBudget(6, 1280, 720)).toBe(18);
-    expect(semanticLabelBudget(6, 4000, 2400)).toBe(24);
-  });
-
   it("ellipsizes by measured width rather than character count", () => {
     const measure = (text: string) => text.split("").reduce((width, char) => width + (char === "W" ? 12 : 4), 0);
     expect(ellipsizeLabel("Wide WWW title", 50, measure)).toBe("Wide W…");

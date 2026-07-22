@@ -23,7 +23,6 @@ import { getPhaseEnvelope, type IngestProgress } from "../lib/ingestMotion";
 import {
   ellipsizeLabel,
   placeSemanticLabels,
-  semanticLabelBudget,
   type LabelCandidate,
   type LabelRect,
 } from "../lib/semanticLabels";
@@ -163,12 +162,6 @@ function triangleFade(k: number, kStart: number, kPeak: number, kEnd: number): n
   if (k <= kStart || k >= kEnd) return 0;
   if (k <= kPeak) return (k - kStart) / Math.max(0.0001, kPeak - kStart);
   return 1 - (k - kPeak) / Math.max(0.0001, kEnd - kPeak);
-}
-
-function rampFade(k: number, kStart: number, kFull: number): number {
-  if (k <= kStart) return 0;
-  if (k >= kFull) return 1;
-  return (k - kStart) / Math.max(0.0001, kFull - kStart);
 }
 
 let ingestOrbIdSeq = 1;
@@ -550,6 +543,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       const W = canvas.width;
       const H = canvas.height;
       if (W < 10 || H < 10) { rafRef.current = requestAnimationFrame(loop); return; }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
 
       const nodes   = nodesRef.current;
       const centers = centersRef.current;
@@ -801,9 +795,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         }
       }
 
-      // ── Node LOD label thresholds ────────────────────────────────────────
-      const titleFade  = rampFade(view.k, 1.8, 2.3);
-
       // ── Nodes ─────────────────────────────────────────────────────────
       for (const n of nodes) {
         if (suppressedIds.has(n.id)) continue;
@@ -931,13 +922,13 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
       for (const orb of ingestOrbsRef.current.values()) drawIngestOrb(ctx, orb, now);
 
       ctx.restore();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-      // ── Semantic paper labels — fixed screen size with collision placement. ──
+      // ── Focus labels — only hovered or pinned papers speak on the canvas. ──
       const selectedId = selectedPaperIdRef.current;
       const labelDetails = new Map<string, { title: string; meta: string; alpha: number; focused: boolean }>();
       const candidates: LabelCandidate[] = [];
       const obstacles: LabelRect[] = [];
-      const simScores = new Map((hov && simGraph?.[hov.id] ? simGraph[hov.id] : []).map(nb => [nb.id, nb.score]));
       const bounds = {
         left: insetsRef.current.left,
         right: W - insetsRef.current.right,
@@ -958,8 +949,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         const isHovered = hov?.id === n.id;
         const isSelected = selectedId === n.id;
         const focused = isHovered || isSelected;
-        const similarityScore = simScores.get(n.id);
-        if (!focused && titleFade <= 0.001) continue;
+        if (!focused) continue;
 
         const rawTitle = n.paper.title || n.paper.filename.replace(/\.pdf$/i, "");
         const title = ellipsizeLabel(rawTitle, 210, value => ctx.measureText(value).width);
@@ -972,12 +962,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         const metaWidth = meta ? ctx.measureText(meta).width : 0;
         ctx.font = "500 12px Inter, system-ui, sans-serif";
         const width = Math.max(titleWidth, metaWidth);
-        const distance = Math.hypot(x - W / 2, y - H / 2);
-        const priority = isHovered ? 10_000
-          : isSelected ? 9_000
-            : similarityScore !== undefined ? 5_000 + similarityScore * 100
-              : 1_000 - distance / Math.max(W, H);
-        const nodeDim = hasSimHighlight && !isHovered && similarityScore === undefined ? dimFactor : 1;
 
         candidates.push({
           id: n.id,
@@ -986,13 +970,13 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           width,
           height: meta ? 29 : 15,
           offset: screenRadius + 7,
-          priority,
-          required: focused,
+          priority: isHovered ? 10_000 : 9_000,
+          required: true,
         });
         labelDetails.set(n.id, {
           title,
           meta,
-          alpha: focused ? 1 : titleFade * nodeDim,
+          alpha: 1,
           focused,
         });
       }
@@ -1001,7 +985,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
         candidates,
         bounds,
         obstacles,
-        semanticLabelBudget(view.k, bounds.right - bounds.left, bounds.bottom - bounds.top),
+        0,
         labelAnchorsRef.current,
       );
       labelAnchorsRef.current = new Map(labels.map(label => [label.id, label.anchor]));

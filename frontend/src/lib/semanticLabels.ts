@@ -30,13 +30,6 @@ export interface LabelPlacement extends LabelCandidate {
 
 const COLLISION_PADDING = 3;
 
-export function semanticLabelBudget(zoom: number, width: number, height: number): number {
-  if (zoom <= 1.8) return 0;
-  const zoomProgress = Math.min(1, (zoom - 1.8) / 2.2);
-  const viewportScale = Math.sqrt(Math.max(1, width * height) / (1280 * 720));
-  return Math.max(4, Math.min(24, Math.round((6 + zoomProgress * 12) * viewportScale)));
-}
-
 export function ellipsizeLabel(
   text: string,
   maxWidth: number,
