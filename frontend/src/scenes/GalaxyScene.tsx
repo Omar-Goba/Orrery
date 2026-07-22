@@ -235,6 +235,7 @@ export function GalaxyScene({
           onFocusCluster={handleFocusCluster}
           initialView={initialView}
           highlightPath={tourHighlightPath}
+          selectedPaperId={pinnedPaper?.id ?? activePaper?.id}
         />
         <ClusterLegend papers={papers} />
         {!libraryOpen && isObserver && (
@@ -407,6 +408,7 @@ export function GalaxyScene({
               active={!desktopViewport && mobileView === "graph"}
               insets={{ left: 30, right: 30, top: 80, bottom: 90 }}
               similarity={similarity}
+              selectedPaperId={activePaper?.id}
             />
             <ClusterLegend papers={papers} />
             {hovered && mobileView === "graph" && <HoverBar paper={hovered} onOpenPaper={openPaper} />}

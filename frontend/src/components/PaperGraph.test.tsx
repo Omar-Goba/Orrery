@@ -179,4 +179,35 @@ describe("PaperGraph living interaction", () => {
     expect(() => orb.update({ step: "Late", pct: 100 })).not.toThrow();
     expect(() => orb.resolve(paper("late", "Unclustered"))).not.toThrow();
   });
+
+  it("keeps a selected paper label screen-sized at maximum zoom", () => {
+    reducedMotion = true;
+    let frame: FrameRequestCallback | undefined;
+    const drawnText: Array<{ text: string; font: string }> = [];
+    const gradient = { addColorStop: vi.fn() };
+    const context: Record<string, unknown> = {
+      clearRect: vi.fn(), fillRect: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), stroke: vi.fn(),
+      save: vi.fn(), restore: vi.fn(), translate: vi.fn(), scale: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
+      createRadialGradient: vi.fn(() => gradient),
+      measureText: vi.fn((text: string) => ({ width: text.length * 7 })),
+      font: "",
+      fillText: vi.fn((text: string) => drawnText.push({ text, font: String(context.font) })),
+      fillStyle: "", strokeStyle: "", lineWidth: 0, shadowColor: "", shadowBlur: 0,
+      globalAlpha: 1, textAlign: "left", textBaseline: "top",
+    };
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => context });
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { frame = callback; return 1; }));
+    const target = { ...paper("fixed-title", "Alpha/Leaf"), author: "Ada", year: "2026" };
+    const { container } = render(<PaperGraph papers={[target]} selectedPaperId={target.id} />);
+    const canvas = container.querySelectorAll("canvas")[1];
+    const nodeX = 400 + jitter(target.id, 1);
+    const nodeY = 79.5 + jitter(target.id, 2);
+
+    fireEvent.wheel(canvas, { clientX: nodeX, clientY: nodeY, deltaY: -10_000 });
+    act(() => frame?.(100));
+
+    expect(drawnText).toContainEqual({ text: "fixed-title", font: "600 12px Inter, system-ui, sans-serif" });
+    expect(drawnText).toContainEqual({ text: "Ada · 2026", font: "400 11px Inter, system-ui, sans-serif" });
+    expect(drawnText.filter(call => call.text === "fixed-title")).toHaveLength(1);
+  });
 });

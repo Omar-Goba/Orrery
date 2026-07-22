@@ -21,6 +21,13 @@ import {
 } from "../lib/galaxyPhysics";
 import { getPhaseEnvelope, type IngestProgress } from "../lib/ingestMotion";
 import {
+  ellipsizeLabel,
+  placeSemanticLabels,
+  semanticLabelBudget,
+  type LabelCandidate,
+  type LabelRect,
+} from "../lib/semanticLabels";
+import {
   cancelIngestOrb,
   createIngestOrbState,
   ingestOrbOpacity,
@@ -185,6 +192,8 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   initialView?: { k: number };
   /** Cluster path to keep fully visible in the leaf-label pass (autopilot tour). */
   highlightPath?: string | null;
+  /** Paper whose label must remain visible after it is pinned outside the canvas. */
+  selectedPaperId?: string | null;
 }>(function PaperGraph({
   papers,
   onHover,
@@ -196,6 +205,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   onFocusCluster,
   initialView,
   highlightPath,
+  selectedPaperId,
 }, ref) {
   const canvasRef  = useRef<HTMLCanvasElement>(null);
   const insetLeft   = insets?.left   ?? 55;
@@ -223,6 +233,9 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   const highlightPathRef = useRef(highlightPath);
   useEffect(() => { highlightPathRef.current = highlightPath; }, [highlightPath]);
 
+  const selectedPaperIdRef = useRef(selectedPaperId);
+  useEffect(() => { selectedPaperIdRef.current = selectedPaperId; }, [selectedPaperId]);
+
   const nodesRef   = useRef<GNode[]>([]);
   const nodesByIdRef = useRef<Map<string, GNode>>(new Map());
   const constellationEdgesRef = useRef<ConstellationEdge[]>([]);
@@ -233,6 +246,7 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
   const lastLeafCenterUpdateRef = useRef(0);
   const centersRef = useRef<Record<string, CenterInfo>>({});
   const hovRef     = useRef<GNode | null>(null);
+  const labelAnchorsRef = useRef<Map<string, number>>(new Map());
   const rafRef     = useRef<number>(0);
   const physicsRef = useRef(createGalaxyPhysicsState());
   const lastFrameRef = useRef<number | null>(null);
@@ -775,26 +789,20 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Percentage label near midpoint
+          // Percentage label near midpoint, counter-scaled to stay screen-sized.
           const pct = Math.round(nb.score * 100);
           ctx.save();
-          ctx.font = "600 11px Inter, system-ui, sans-serif";
+          ctx.font = `600 ${11 / view.k}px Inter, system-ui, sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillStyle = "rgba(255,255,255,0.92)";
-          ctx.fillText(`${pct}%`, mx, my - 6);
+          ctx.fillText(`${pct}%`, mx, my - 6 / view.k);
           ctx.restore();
         }
       }
 
       // ── Node LOD label thresholds ────────────────────────────────────────
       const titleFade  = rampFade(view.k, 1.8, 2.3);
-      const metaFade   = rampFade(view.k, 3.0, 3.6);
-      // Visible world-space bounds for cheap culling of label text draws
-      const viewMinX = -view.tx / view.k;
-      const viewMinY = -view.ty / view.k;
-      const viewMaxX = (W - view.tx) / view.k;
-      const viewMaxY = (H - view.ty) / view.k;
 
       // ── Nodes ─────────────────────────────────────────────────────────
       for (const n of nodes) {
@@ -861,35 +869,6 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
           ctx.globalAlpha = 1;
         }
 
-        // ── LOD text labels (title, then author/year) — culled to visible
-        // world-space bounds, faded in over a k-range. ────────────────────
-        if (titleFade > 0.001) {
-          if (renderX >= viewMinX - 40 && renderX <= viewMaxX + 40 &&
-              renderY >= viewMinY - 20 && renderY <= viewMaxY + 40) {
-            const rawTitle = n.paper.title || n.paper.filename.replace(/\.pdf$/i, "");
-            const title = rawTitle.length > 36 ? rawTitle.slice(0, 33) + "…" : rawTitle;
-            ctx.save();
-            ctx.globalAlpha = titleFade * nodeDim;
-            ctx.font = "500 11px Inter, system-ui, sans-serif";
-            ctx.textAlign = "left";
-            ctx.textBaseline = "top";
-            ctx.fillStyle = "rgba(226,232,240,0.92)";
-            ctx.fillText(title, renderX + r + 6, renderY + r + 2);
-
-            if (metaFade > 0.001) {
-              const author = n.paper.author ?? "";
-              const year = n.paper.year ?? "";
-              const meta = [author, year].filter(Boolean).join(" · ");
-              if (meta) {
-                ctx.globalAlpha = titleFade * metaFade * nodeDim;
-                ctx.font = "400 10px Inter, system-ui, sans-serif";
-                ctx.fillStyle = "rgba(148,163,184,0.85)";
-                ctx.fillText(meta, renderX + r + 6, renderY + r + 15);
-              }
-            }
-            ctx.restore();
-          }
-        }
       }
 
       // ── Ignition flares — one-shot expanding ring when a star lights up ──
@@ -953,8 +932,111 @@ export const PaperGraph = forwardRef<PaperGraphHandle, {
 
       ctx.restore();
 
-      // Detail on hover is surfaced by the floating HoverBar (App.tsx), not the canvas —
-      // avoids showing the same title/author/status twice at once.
+      // ── Semantic paper labels — fixed screen size with collision placement. ──
+      const selectedId = selectedPaperIdRef.current;
+      const labelDetails = new Map<string, { title: string; meta: string; alpha: number; focused: boolean }>();
+      const candidates: LabelCandidate[] = [];
+      const obstacles: LabelRect[] = [];
+      const simScores = new Map((hov && simGraph?.[hov.id] ? simGraph[hov.id] : []).map(nb => [nb.id, nb.score]));
+      const bounds = {
+        left: insetsRef.current.left,
+        right: W - insetsRef.current.right,
+        top: insetsRef.current.top,
+        bottom: H - insetsRef.current.bottom,
+      };
+
+      ctx.font = "500 12px Inter, system-ui, sans-serif";
+      for (const n of nodes) {
+        if (suppressedIds.has(n.id)) continue;
+        const x = n.x * view.k + view.tx;
+        const y = n.y * view.k + view.ty;
+        if (x < bounds.left - 230 || x > bounds.right + 230 || y < bounds.top - 40 || y > bounds.bottom + 40) continue;
+
+        const screenRadius = Math.min(18, Math.max(6, NODE_R * view.k));
+        obstacles.push({ x: x - screenRadius, y: y - screenRadius, width: screenRadius * 2, height: screenRadius * 2 });
+
+        const isHovered = hov?.id === n.id;
+        const isSelected = selectedId === n.id;
+        const focused = isHovered || isSelected;
+        const similarityScore = simScores.get(n.id);
+        if (!focused && titleFade <= 0.001) continue;
+
+        const rawTitle = n.paper.title || n.paper.filename.replace(/\.pdf$/i, "");
+        const title = ellipsizeLabel(rawTitle, 210, value => ctx.measureText(value).width);
+        const titleWidth = ctx.measureText(title).width;
+        const rawMeta = [n.paper.author, n.paper.year].filter(Boolean).join(" · ");
+        ctx.font = "400 11px Inter, system-ui, sans-serif";
+        const meta = focused && rawMeta
+          ? ellipsizeLabel(rawMeta, 210, value => ctx.measureText(value).width)
+          : "";
+        const metaWidth = meta ? ctx.measureText(meta).width : 0;
+        ctx.font = "500 12px Inter, system-ui, sans-serif";
+        const width = Math.max(titleWidth, metaWidth);
+        const distance = Math.hypot(x - W / 2, y - H / 2);
+        const priority = isHovered ? 10_000
+          : isSelected ? 9_000
+            : similarityScore !== undefined ? 5_000 + similarityScore * 100
+              : 1_000 - distance / Math.max(W, H);
+        const nodeDim = hasSimHighlight && !isHovered && similarityScore === undefined ? dimFactor : 1;
+
+        candidates.push({
+          id: n.id,
+          x,
+          y,
+          width,
+          height: meta ? 29 : 15,
+          offset: screenRadius + 7,
+          priority,
+          required: focused,
+        });
+        labelDetails.set(n.id, {
+          title,
+          meta,
+          alpha: focused ? 1 : titleFade * nodeDim,
+          focused,
+        });
+      }
+
+      const labels = placeSemanticLabels(
+        candidates,
+        bounds,
+        obstacles,
+        semanticLabelBudget(view.k, bounds.right - bounds.left, bounds.bottom - bounds.top),
+        labelAnchorsRef.current,
+      );
+      labelAnchorsRef.current = new Map(labels.map(label => [label.id, label.anchor]));
+
+      for (const label of labels) {
+        const detail = labelDetails.get(label.id);
+        if (!detail) continue;
+        ctx.save();
+        ctx.globalAlpha = detail.alpha;
+        if (detail.focused) {
+          const lineX = Math.max(label.rect.x, Math.min(label.x, label.rect.x + label.rect.width));
+          const lineY = Math.max(label.rect.y, Math.min(label.y, label.rect.y + label.rect.height));
+          ctx.beginPath();
+          ctx.moveTo(label.x, label.y);
+          ctx.lineTo(lineX, lineY);
+          ctx.strokeStyle = "rgba(148,163,184,0.38)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        ctx.shadowColor = "rgba(7,9,14,0.95)";
+        ctx.shadowBlur = 5;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.font = detail.focused
+          ? "600 12px Inter, system-ui, sans-serif"
+          : "500 12px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(226,232,240,0.94)";
+        ctx.fillText(detail.title, label.rect.x, label.rect.y);
+        if (detail.meta) {
+          ctx.font = "400 11px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(148,163,184,0.88)";
+          ctx.fillText(detail.meta, label.rect.x, label.rect.y + 16);
+        }
+        ctx.restore();
+      }
 
       rafRef.current = requestAnimationFrame(loop);
     };

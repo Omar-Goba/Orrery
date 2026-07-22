@@ -161,6 +161,23 @@ describe("GalaxyScene gating", () => {
     expect(api.getTree).toHaveBeenCalledWith("normal");
   });
 
+  it("returns the pinned paper to the graph as its selected label", async () => {
+    render(
+      <GalaxyScene galaxy="omar" mode="owner" session={null} onExitToUniverse={() => {}} />
+    );
+    await screen.findAllByTestId("paper-graph");
+    const graph = sceneMocks.desktopGraphProps as {
+      onOpenPaper: (paper: PaperRecord) => void;
+      selectedPaperId?: string;
+    };
+
+    act(() => graph.onOpenPaper(fixturePapers[0]));
+
+    await waitFor(() => {
+      expect(sceneMocks.desktopGraphProps).toMatchObject({ selectedPaperId: fixturePapers[0].id });
+    });
+  });
+
   it("shows the Storage Ledger only for keeper owner sessions", async () => {
     const { rerender } = render(
       <GalaxyScene galaxy="omar" mode="owner" session={keeperSession} onExitToUniverse={() => {}} />
