@@ -42,6 +42,11 @@ export interface AuthUser {
   created_at: string;
 }
 
+export interface PublicGalaxy {
+  handle: string;
+  display_name: string;
+}
+
 export interface VoyagerStorageSummary {
   handle: string;
   display_name: string;
@@ -190,6 +195,11 @@ export async function signupAuth(
 export async function getMe(): Promise<AuthUser> {
   const resp = await fetch(`${BASE}/api/auth/me`, { credentials: withCookies });
   return jsonOrThrow<AuthUser>(resp);
+}
+
+export async function listPublicGalaxies(): Promise<PublicGalaxy[]> {
+  const resp = await fetch(`${BASE}/api/auth/galaxies`);
+  return jsonOrThrow<PublicGalaxy[]>(resp);
 }
 
 export async function listKeeperVoyagers(): Promise<VoyagerStorageSummary[]> {

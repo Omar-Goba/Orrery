@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import pytest
+from sqlmodel import Session
 
+from backend.auth.db import get_engine
+from backend.auth.models import ROLE_KEEPER, User
 from backend.auth.service import GENERIC_LOGIN_ERROR, SESSION_COOKIE_NAME
 from backend.config import settings
 
@@ -70,6 +73,41 @@ def test_signup_invite_mode_correct_code_succeeds(
         json={"handle": "someone3", "password": "longenough123", "invite_code": "letmein"},
     )
     assert resp.status_code == 201
+
+
+def test_public_galaxies_are_real_active_voyagers_and_capped(client) -> None:
+    with Session(get_engine()) as db:
+        for index in range(14):
+            db.add(
+                User(
+                    id=f"voyager-{index}",
+                    handle=f"realvoyager{index:02d}",
+                    display_name=f"Real Voyager {index}",
+                    password_hash="unused",
+                    disabled=index == 13,
+                )
+            )
+        db.add(
+            User(
+                id="keeper",
+                handle="realkeeper",
+                display_name="Real Keeper",
+                password_hash="unused",
+                role=ROLE_KEEPER,
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/auth/galaxies")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 12
+    assert response.json()[0] == {
+        "handle": "realvoyager00",
+        "display_name": "Real Voyager 0",
+    }
+    assert all(galaxy["handle"] != "realkeeper" for galaxy in response.json())
+    assert all(galaxy["handle"] != "realvoyager13" for galaxy in response.json())
 
 
 def test_login_wrong_password_and_nonexistent_user_identical_error(

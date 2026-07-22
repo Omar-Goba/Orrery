@@ -125,6 +125,11 @@ class TourGalaxyResponse(BaseModel):
     constellations: int
 
 
+class PublicGalaxyResponse(BaseModel):
+    handle: str
+    display_name: str
+
+
 class Recommendation(BaseModel):
     paper_id: str
     title: str
