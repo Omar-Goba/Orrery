@@ -74,7 +74,7 @@ describe("TourController", () => {
   function Harness({ focusCluster }: { focusCluster: (path: string | null) => void }) {
     const graphRef = useRef<PaperGraphHandle>({
       pulseCitations: () => {},
-      spawnMeteor: () => ({ arrive: () => {}, cancel: () => {} }),
+      spawnIngestOrb: () => ({ update: () => {}, resolve: () => {}, cancel: () => {} }),
       focusCluster,
       igniteStar: () => {},
     });

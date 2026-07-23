@@ -22,8 +22,6 @@ from backend.config import settings
 SESSION_COOKIE_NAME = "orrery_session"
 SESSION_TTL = timedelta(days=30)
 
-# Reserved handles: Tier 1 "core" words + Tier 1 fake-galaxy handles, so the
-# landing-page fakes never collide with real people.
 RESERVED_HANDLES: frozenset[str] = frozenset(
     {
         "admin",
@@ -33,8 +31,6 @@ RESERVED_HANDLES: frozenset[str] = frozenset(
         "api",
         "orrery",
         "omar",
-        "m.chen",
-        "vega-7",
     }
 )
 
@@ -124,6 +120,17 @@ def login(session: Session, *, handle: str, password: str) -> User:
     if not verify_password(password, user.password_hash):
         raise AuthError(GENERIC_LOGIN_ERROR, status_code=401)
     return user
+
+
+def list_public_galaxies(session: Session, limit: int = 12) -> list[User]:
+    """Return a stable, privacy-minimal sample of active Voyager galaxies."""
+    statement = (
+        select(User)
+        .where(User.role == ROLE_VOYAGER, User.disabled.is_(False))
+        .order_by(User.created_at, User.handle)
+        .limit(limit)
+    )
+    return list(session.exec(statement).all())
 
 
 # Precomputed dummy hash so a nonexistent-user login still pays the argon2 cost.

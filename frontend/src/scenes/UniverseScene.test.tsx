@@ -8,7 +8,11 @@ vi.mock("../components/StarfieldCanvas", () => ({
 }));
 
 vi.mock("../api/client", () => ({
-  getTourGalaxy: vi.fn().mockResolvedValue({ stars: 3, ignited: 1, constellations: 2 }),
+  getTourGalaxy: vi.fn().mockResolvedValue({ display_name: "Omar", stars: 3, ignited: 1, constellations: 2 }),
+  listPublicGalaxies: vi.fn().mockResolvedValue([
+    { handle: "nova", display_name: "Nova" },
+    { handle: "kepler", display_name: "Kepler" },
+  ]),
 }));
 
 const keeper: Session = {
@@ -38,5 +42,22 @@ describe("UniverseScene", () => {
 
     expect(onContinue).toHaveBeenCalledWith("omar");
     expect(onVisitObserver).not.toHaveBeenCalled();
+  });
+
+  it("renders real account galaxies as sealed destinations", async () => {
+    render(
+      <UniverseScene
+        session={null}
+        onVisitObserver={() => {}}
+        onEnter={() => {}}
+        onContinue={() => {}}
+      />,
+    );
+
+    const galaxy = await screen.findByRole("button", { name: /nova's galaxy/i });
+    fireEvent.click(galaxy);
+
+    expect(screen.getByText("This galaxy is sealed.")).toBeInTheDocument();
+    expect(screen.queryByText(/m\. chen|vega-7/i)).not.toBeInTheDocument();
   });
 });

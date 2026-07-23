@@ -13,6 +13,7 @@ from backend.auth.deps import current_user, get_db, verify_origin
 from backend.auth.models import User
 from backend.auth.ratelimit import login_limiter, signup_limiter
 from backend.auth.service import AuthError
+from backend.models import PublicGalaxyResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -122,3 +123,11 @@ async def logout(
 @router.get("/me", response_model=MeResponse)
 async def me(user: User = Depends(current_user)) -> MeResponse:
     return _me_response(user)
+
+
+@router.get("/galaxies", response_model=list[PublicGalaxyResponse])
+async def galaxies(db: Session = Depends(get_db)) -> list[PublicGalaxyResponse]:
+    return [
+        PublicGalaxyResponse(handle=user.handle, display_name=user.display_name)
+        for user in service.list_public_galaxies(db)
+    ]

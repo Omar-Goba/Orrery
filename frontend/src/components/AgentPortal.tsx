@@ -9,6 +9,7 @@ import remarkGfm from "remark-gfm";
 import type { ApiMode, Citation, PaperRecord, SSEEvent } from "../api/client";
 import { formatBytes, getMe, getPaperUrl, streamChat, uploadPaper } from "../api/client";
 import { useSSEStream } from "../hooks/useSSEStream";
+import { IngestOrbIndicator } from "./IngestOrbIndicator";
 
 // ── Message types ───────────────────────────────────────────────────────────
 type AgentRole = "oracle" | "librarian";
@@ -33,7 +34,8 @@ export function AgentPortal({
   onOpenPaperId,
   onCitations,
   onUploadStart,
-  onUploadArrive,
+  onUploadProgress,
+  onUploadResolve,
   onUploadCancel,
   hideHeader = false,
   variant = "panel",
@@ -46,10 +48,12 @@ export function AgentPortal({
   onOpenPaperId?: (paperId: string) => void;
   /** Fired with cited paper ids as soon as the Oracle's citations arrive. */
   onCitations?: (paperIds: string[]) => void;
-  /** Fired the moment an upload begins (cluster not known yet). */
-  onUploadStart?: () => void;
-  /** Fired once the paper's final cluster_path is known. */
-  onUploadArrive?: (clusterPath: string) => void;
+  /** Fired with a deterministic visual seed when an upload begins. */
+  onUploadStart?: (seed: string) => void;
+  /** Fired for every upload progress event, including 100%. */
+  onUploadProgress?: (progress: { step: string; pct: number }) => void;
+  /** Fired synchronously with the authoritative paper before data refresh. */
+  onUploadResolve?: (paper: PaperRecord) => void;
   /** Fired if an upload fails before a cluster was resolved. */
   onUploadCancel?: () => void;
   hideHeader?: boolean;
@@ -77,10 +81,21 @@ export function AgentPortal({
   const [open, setOpen]           = useState(false);
   const [dragging, setDragging]   = useState(false);
   const [usage, setUsage]         = useState<{ used: number; quota: number } | null>(null);
+  const [reducedMotion, setReducedMotion] = useState(
+    () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  );
   const bottomRef  = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
   const inputRef   = useRef<HTMLInputElement>(null);
   const stream     = useSSEStream();
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = (event: MediaQueryListEvent) => setReducedMotion(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   // ── Float-only: ⌘K / "/" focuses the omnibar ──────────────────────────────
   useEffect(() => {
@@ -240,7 +255,7 @@ export function AgentPortal({
     setPending(null);
     setBusy(true);
     setOpen(true);
-    onUploadStart?.();
+    onUploadStart?.(`${file.name}:${file.size}`);
 
     const pId = uid();
     append({
@@ -254,12 +269,18 @@ export function AgentPortal({
     try {
       await uploadPaper(file, status, (ev: SSEEvent) => {
         if (ev.type === "progress") {
+          onUploadProgress?.({ step: ev.step, pct: ev.pct });
           patchById(pId, m => ({
             ...m,
             progress: { step: ev.step, pct: ev.pct },
           }));
         } else if (ev.type === "done" && "paper" in ev) {
           const p = (ev as { type: "done"; paper: PaperRecord }).paper;
+          onUploadResolve?.(p);
+          onUploadDone?.();
+          getMe()
+            .then(me => setUsage({ used: me.storage_used_bytes, quota: me.storage_quota_bytes }))
+            .catch(() => setUsage(null));
           patchById(pId, m => ({
             ...m,
             streaming: false,
@@ -269,11 +290,6 @@ export function AgentPortal({
               (p.cluster_path ?? "library").replace("/", " › ")
             }_.`,
           }));
-          onUploadArrive?.(p.cluster_path ?? "");
-          onUploadDone?.();
-          getMe()
-            .then(me => setUsage({ used: me.storage_used_bytes, quota: me.storage_quota_bytes }))
-            .catch(() => setUsage(null));
         }
         scrollDown();
       });
@@ -301,6 +317,7 @@ export function AgentPortal({
           onOpenPaper={onOpenPaper}
           onOpenPaperId={onOpenPaperId}
           apiMode={apiMode}
+          reducedMotion={reducedMotion}
         />
       ))}
       <div ref={bottomRef} />
@@ -530,11 +547,13 @@ function MsgBubble({
   onOpenPaper,
   onOpenPaperId,
   apiMode,
+  reducedMotion,
 }: {
   msg: Msg;
   onOpenPaper?: (paper: PaperRecord) => void;
   onOpenPaperId?: (paperId: string) => void;
   apiMode: ApiMode;
+  reducedMotion: boolean;
 }) {
   if (msg.role === "system") {
     return (
@@ -581,16 +600,23 @@ function MsgBubble({
 
         {/* Progress bar */}
         {msg.progress && (
-          <div className={clsx("rounded-xl px-3 py-2.5 border space-y-2", bg, border)}>
-            <div className="flex justify-between text-[11px]">
-              <span className="text-zinc-400">{msg.progress.step}</span>
-              <span className="text-muted tabular-nums">{msg.progress.pct}%</span>
-            </div>
-            <div className="h-0.5 bg-rim rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-cyan-600 to-cyan-400 transition-all duration-500"
-                style={{ width: `${msg.progress.pct}%` }}
-              />
+          <div className={clsx("flex items-center gap-3 rounded-xl px-3 py-2.5 border", bg, border)}>
+            <IngestOrbIndicator
+              step={msg.progress.step}
+              pct={msg.progress.pct}
+              reducedMotion={reducedMotion}
+            />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex justify-between gap-2 text-[11px]">
+                <span className="truncate text-zinc-400">{msg.progress.step}</span>
+                <span className="shrink-0 text-muted tabular-nums">{msg.progress.pct}%</span>
+              </div>
+              <div className="h-0.5 bg-rim rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-600 to-cyan-400 transition-all duration-500"
+                  style={{ width: `${msg.progress.pct}%` }}
+                />
+              </div>
             </div>
           </div>
         )}

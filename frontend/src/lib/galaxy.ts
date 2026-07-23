@@ -1,21 +1,26 @@
-import type { PaperRecord } from "../api/client";
+import type { PaperRecord, PublicGalaxy } from "../api/client";
 
-export interface GalaxyGlyph {
-  username: string;
-  displayName: string;   // "Omar's galaxy"
-  stars: number;
-  ignited: number;
-  constellations: number;
-  isOpen: boolean;       // open to visitors
-  isFake: boolean;
+export const MAX_PUBLIC_GALAXIES = 12;
+
+export interface GalaxyPosition extends PublicGalaxy {
+  x: number;
+  y: number;
 }
 
-export const FAKE_GALAXIES: GalaxyGlyph[] = [
-  { username: "m.chen",  displayName: "m. chen's galaxy", stars: 34, ignited: 12,
-    constellations: 5, isOpen: false, isFake: true },
-  { username: "vega-7",  displayName: "vega-7's galaxy",  stars: 61, ignited: 40,
-    constellations: 8, isOpen: false, isFake: true },
-];
+export function positionGalaxies(galaxies: PublicGalaxy[]): GalaxyPosition[] {
+  const visible = galaxies.slice(0, MAX_PUBLIC_GALAXIES);
+  return visible.map((galaxy, index) => {
+    const ring = index % 2;
+    const angle = (index / Math.max(visible.length, 1)) * Math.PI * 2 - Math.PI / 2;
+    const radiusX = ring ? 530 : 360;
+    const radiusY = ring ? 330 : 235;
+    return {
+      ...galaxy,
+      x: Math.cos(angle) * radiusX,
+      y: Math.sin(angle) * radiusY,
+    };
+  });
+}
 
 export function computeGalaxyStats(papers: PaperRecord[]): {
   stars: number; ignited: number; constellations: number; latestCometAt: string | null;

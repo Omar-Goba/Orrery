@@ -52,6 +52,8 @@ services:
       ORRERY_DBS_DIR: /data
       ORRERY_CHROMA_PERSIST_DIR: /data/chroma
       ORRERY_LOG_DIR: /data/logs
+      # The published frontend runs on port 80, while the config default targets Vite.
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173},http://localhost,http://127.0.0.1"
       ORRERY_OBJECT_STORE: s3
       ORRERY_S3_BUCKET: ${ORRERY_S3_BUCKET:?ORRERY_S3_BUCKET must be set}
       ORRERY_S3_ENDPOINT_URL: http://minio:9000

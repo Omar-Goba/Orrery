@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, RefreshCw, FolderTree, Network, MessageSquare, PanelLeftClose, ScanSearch, Search, HardDrive } from "lucide-react";
 import clsx from "clsx";
 import { TreeView } from "../components/TreeView";
-import { PaperGraph, type PaperGraphHandle } from "../components/PaperGraph";
+import { PaperGraph, type IngestOrbHandle, type PaperGraphHandle } from "../components/PaperGraph";
 import { AgentPortal } from "../components/AgentPortal";
 import { PdfReader } from "../components/PdfReader";
 import { ReadNext } from "../components/ReadNext";
@@ -57,16 +57,27 @@ export function GalaxyScene({
   const [focusPath, setFocusPath]    = useState<string | null>(null);
   const [oraclePrefill, setOraclePrefill] = useState<{ text: string; token: number } | null>(null);
   const [tourHighlightPath, setTourHighlightPath] = useState<string | null>(null);
+  const [desktopViewport, setDesktopViewport] = useState(() =>
+    window.matchMedia?.("(min-width: 1024px)").matches ?? window.innerWidth >= 1024
+  );
   const abortReindex                 = useRef<(() => void) | null>(null);
   const graphRef    = useRef<PaperGraphHandle>(null);
   const focusTokenRef = useRef(0);
   const oracleTokenRef = useRef(0);
-  const meteorRef   = useRef<{ arrive: (clusterPath: string) => void; cancel: () => void } | null>(null);
+  const ingestOrbRef = useRef<IngestOrbHandle | null>(null);
 
   // Owner mode always reads the authenticated user's own galaxy. Observer mode
   // only has one public target: Omar's Keeper tour.
   const hasRealData = mode === "owner" || galaxy === OWNER_USERNAME;
   const apiMode: ApiMode = mode === "observer" ? "tour" : "normal";
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    const onChange = (event: MediaQueryListEvent) => setDesktopViewport(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   const load = useCallback(async () => {
     if (!hasRealData) {
@@ -157,18 +168,27 @@ export function GalaxyScene({
     graphRef.current?.pulseCitations(paperIds);
   }, []);
 
-  const handleUploadStart = useCallback(() => {
-    meteorRef.current = graphRef.current?.spawnMeteor() ?? null;
+  const handleUploadStart = useCallback((seed: string) => {
+    ingestOrbRef.current?.cancel();
+    ingestOrbRef.current = graphRef.current?.spawnIngestOrb(seed) ?? null;
   }, []);
 
-  const handleUploadArrive = useCallback((clusterPath: string) => {
-    meteorRef.current?.arrive(clusterPath);
-    meteorRef.current = null;
+  const handleUploadProgress = useCallback((progress: { step: string; pct: number }) => {
+    ingestOrbRef.current?.update(progress);
+  }, []);
+
+  const handleUploadResolve = useCallback((paper: PaperRecord) => {
+    ingestOrbRef.current?.resolve(paper);
   }, []);
 
   const handleUploadCancel = useCallback(() => {
-    meteorRef.current?.cancel();
-    meteorRef.current = null;
+    ingestOrbRef.current?.cancel();
+    ingestOrbRef.current = null;
+  }, []);
+
+  useEffect(() => () => {
+    ingestOrbRef.current?.cancel();
+    ingestOrbRef.current = null;
   }, []);
 
   const handleFocusCluster = useCallback((path: string) => {
@@ -207,6 +227,7 @@ export function GalaxyScene({
         <PaperGraph
           ref={graphRef}
           papers={papers}
+          active={desktopViewport}
           onHover={setHovered}
           onOpenPaper={pinStar}
           insets={{ left: libraryOpen ? 380 : 120, right: 100, top: 90, bottom: 150 }}
@@ -214,6 +235,7 @@ export function GalaxyScene({
           onFocusCluster={handleFocusCluster}
           initialView={initialView}
           highlightPath={tourHighlightPath}
+          selectedPaperId={pinnedPaper?.id ?? activePaper?.id}
         />
         <ClusterLegend papers={papers} />
         {!libraryOpen && isObserver && (
@@ -292,7 +314,8 @@ export function GalaxyScene({
           onOpenPaperId={openPaperById}
           onCitations={handleCitations}
           onUploadStart={handleUploadStart}
-          onUploadArrive={handleUploadArrive}
+          onUploadProgress={handleUploadProgress}
+          onUploadResolve={handleUploadResolve}
           onUploadCancel={handleUploadCancel}
           apiMode={apiMode}
           disableUpload={isObserver}
@@ -382,9 +405,10 @@ export function GalaxyScene({
               papers={papers}
               onHover={setHovered}
               onOpenPaper={openPaper}
-              active={mobileView === "graph"}
+              active={!desktopViewport && mobileView === "graph"}
               insets={{ left: 30, right: 30, top: 80, bottom: 90 }}
               similarity={similarity}
+              selectedPaperId={activePaper?.id}
             />
             <ClusterLegend papers={papers} />
             {hovered && mobileView === "graph" && <HoverBar paper={hovered} onOpenPaper={openPaper} />}
